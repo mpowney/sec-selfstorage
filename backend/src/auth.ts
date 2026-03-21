@@ -18,7 +18,7 @@ const RP_ORIGIN = process.env['RP_ORIGIN'] ?? 'http://localhost:3000';
 // GET /auth/status
 router.get('/status', (req: Request, res: Response) => {
   if (req.session.userId) {
-    res.json({ authenticated: true, userId: req.session.userId, username: req.session.username });
+    res.json({ authenticated: true, userId: req.session.userId, username: req.session.username, credentialId: req.session.credentialId });
   } else {
     res.json({ authenticated: false });
   }
@@ -297,6 +297,7 @@ router.post('/login/finish', async (req: Request, res: Response) => {
     // Set session
     req.session.userId = user.id;
     req.session.username = user.username;
+    req.session.credentialId = credential.credential_id;
 
     res.json({ verified: true, userId: user.id, username: user.username, credentialId: credential.credential_id });
   } catch (err) {

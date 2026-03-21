@@ -17,6 +17,7 @@ export interface AuthStatus {
   authenticated: boolean;
   userId?: string;
   username?: string;
+  credentialId?: string;
 }
 
 export interface RegistrationStartResponse {

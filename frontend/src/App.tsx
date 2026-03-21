@@ -27,6 +27,7 @@ export default function App() {
         setAuthenticated(status.authenticated);
         setUsername(status.username);
         setUserId(status.userId);
+        setCredentialId(status.credentialId);
       })
       .catch(() => setAuthenticated(false))
       .finally(() => setLoading(false));
