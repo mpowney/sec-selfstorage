@@ -25,6 +25,7 @@ export interface FileRecord {
   authTag: string;
   uploadedAt: string;
   folderPath: string;
+  clientEncrypted: boolean;
 }
 
 declare module 'express-session' {

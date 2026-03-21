@@ -20,6 +20,7 @@ export default function App() {
   const [username, setUsername] = useState<string | undefined>();
   const [userId, setUserId] = useState<string | undefined>();
   const [credentialId, setCredentialId] = useState<string | undefined>();
+  const [clientKey, setClientKey] = useState<CryptoKey | null>(null);
 
   useEffect(() => {
     getAuthStatus()
@@ -44,10 +45,11 @@ export default function App() {
   if (!authenticated) {
     return (
       <LoginPage
-        onLogin={(uid, uname, credId) => {
+        onLogin={(uid, uname, credId, key) => {
           setUserId(uid);
           setUsername(uname);
           setCredentialId(credId);
+          setClientKey(key);
           setAuthenticated(true);
         }}
       />
@@ -59,11 +61,13 @@ export default function App() {
       username={username ?? ''}
       userId={userId ?? ''}
       credentialId={credentialId ?? ''}
+      clientKey={clientKey}
       onLogout={() => {
         setAuthenticated(false);
         setUsername(undefined);
         setUserId(undefined);
         setCredentialId(undefined);
+        setClientKey(null);
       }}
     />
   );
