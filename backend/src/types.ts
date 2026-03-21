@@ -24,12 +24,14 @@ export interface FileRecord {
   iv: string;
   authTag: string;
   uploadedAt: string;
+  folderPath: string;
 }
 
 declare module 'express-session' {
   interface SessionData {
     userId: string;
     username: string;
+    credentialId: string;
     challengeId: string;
     csrfToken: string;
   }

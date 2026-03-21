@@ -17,6 +17,7 @@ export interface AuthStatus {
   authenticated: boolean;
   userId?: string;
   username?: string;
+  credentialId?: string;
 }
 
 export interface RegistrationStartResponse {
@@ -37,6 +38,7 @@ export interface FileRecord {
   mimeType: string;
   size: number;
   uploadedAt: string;
+  folderPath: string;
 }
 
 // CSRF token cache — fetched once per page load
@@ -122,15 +124,17 @@ export async function logout(): Promise<void> {
   clearCsrfToken();
 }
 
-export async function listFiles(): Promise<FileRecord[]> {
-  const res = await fetch('/api/files', { credentials: 'include' });
+export async function listFiles(folder = ''): Promise<{ files: FileRecord[]; folders: string[] }> {
+  const params = new URLSearchParams({ folder });
+  const res = await fetch(`/api/files?${params.toString()}`, { credentials: 'include' });
   if (!res.ok) throw new Error('Failed to list files');
-  return res.json() as Promise<FileRecord[]>;
+  return res.json() as Promise<{ files: FileRecord[]; folders: string[] }>;
 }
 
 export async function uploadFile(
   file: File,
   credentialId: string,
+  folderPath: string,
   onProgress?: (pct: number) => void,
 ): Promise<FileRecord> {
   const csrfToken = await getCsrfToken();
@@ -138,6 +142,7 @@ export async function uploadFile(
     const formData = new FormData();
     formData.append('file', file);
     formData.append('credentialId', credentialId);
+    formData.append('folderPath', folderPath);
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/files/upload');
     xhr.withCredentials = true;
@@ -175,6 +180,13 @@ export async function downloadFile(fileId: string, filename: string): Promise<vo
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+export async function previewFile(fileId: string): Promise<{ url: string; mimeType: string }> {
+  const res = await fetch(`/api/files/${fileId}/download`, { credentials: 'include' });
+  if (!res.ok) throw new Error('Preview failed');
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), mimeType: blob.type };
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
