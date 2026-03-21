@@ -1,0 +1,30 @@
+# Development Dockerfile - runs both backend (tsx watch) and frontend (vite dev)
+FROM node:22-alpine AS development
+
+# Install build tools for native modules (better-sqlite3)
+RUN apk add --no-cache python3 make g++ curl
+
+WORKDIR /app
+
+# Install backend dependencies
+COPY backend/package*.json ./backend/
+RUN cd backend && npm install
+
+# Install frontend dependencies
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm install
+
+# Copy source (will be overridden by volume mounts in docker-compose.dev.yml)
+COPY backend/ ./backend/
+COPY frontend/ ./frontend/
+
+# Create data directory
+RUN mkdir -p /app/data
+
+EXPOSE 4000 3000
+
+# Use a startup script to run both backend and frontend concurrently
+COPY scripts/dev-start.sh /usr/local/bin/dev-start.sh
+RUN chmod +x /usr/local/bin/dev-start.sh
+
+CMD ["/usr/local/bin/dev-start.sh"]
