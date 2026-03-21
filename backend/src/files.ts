@@ -19,10 +19,12 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
 
 router.use(requireAuth);
 
-// GET /files - list user's files
+// GET /files - list user's files in a folder
 router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDb();
+    const folder = typeof req.query['folder'] === 'string' ? req.query['folder'] : '';
+
     type FileRow = {
       id: string;
       user_id: string;
@@ -33,14 +35,15 @@ router.get('/', (req: Request, res: Response) => {
       iv: string;
       auth_tag: string;
       uploaded_at: string;
+      folder_path: string;
     };
 
     const rows = db
       .prepare(
-        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at
-         FROM files WHERE user_id = ? ORDER BY uploaded_at DESC`,
+        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path
+         FROM files WHERE user_id = ? AND folder_path = ? ORDER BY uploaded_at DESC`,
       )
-      .all(req.session.userId) as FileRow[];
+      .all(req.session.userId, folder) as FileRow[];
 
     const files: FileRecord[] = rows.map((r) => ({
       id: r.id,
@@ -52,9 +55,31 @@ router.get('/', (req: Request, res: Response) => {
       iv: r.iv,
       authTag: r.auth_tag,
       uploadedAt: r.uploaded_at,
+      folderPath: r.folder_path,
     }));
 
-    res.json(files);
+    // Derive immediate subfolders under the current folder
+    // Escape LIKE special characters in the prefix to avoid unintended matches
+    const prefix = folder ? folder + '/' : '';
+    const escapedPrefix = prefix.replace(/[%_\\]/g, '\\$&');
+    const allPaths = db
+      .prepare(
+        "SELECT DISTINCT folder_path FROM files WHERE user_id = ? AND folder_path LIKE ? ESCAPE '\\'",
+      )
+      .all(req.session.userId, escapedPrefix + '%') as Array<{ folder_path: string }>;
+
+    const folders = Array.from(
+      new Set(
+        allPaths
+          .map((r) => {
+            const rest = r.folder_path.slice(prefix.length);
+            return rest.split('/')[0];
+          })
+          .filter((name) => name.length > 0),
+      ),
+    ).sort();
+
+    res.json({ files, folders });
   } catch (err) {
     console.error('files list error:', err);
     res.status(500).json({ error: 'Failed to list files' });
@@ -69,11 +94,13 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       return;
     }
 
-    const { credentialId } = req.body as { credentialId?: string };
+    const { credentialId, folderPath } = req.body as { credentialId?: string; folderPath?: string };
     if (!credentialId) {
       res.status(400).json({ error: 'credentialId is required' });
       return;
     }
+
+    const resolvedFolderPath = typeof folderPath === 'string' ? folderPath.trim() : '';
 
     const db = getDb();
 
@@ -92,8 +119,8 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
 
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO files (id, user_id, credential_id, filename, mime_type, size, encrypted_data, iv, auth_tag, uploaded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO files (id, user_id, credential_id, filename, mime_type, size, encrypted_data, iv, auth_tag, uploaded_at, folder_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       fileId,
       req.session.userId,
@@ -105,6 +132,7 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       iv,
       authTag,
       now,
+      resolvedFolderPath,
     );
 
     const fileRecord: FileRecord = {
@@ -117,6 +145,7 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       iv,
       authTag,
       uploadedAt: now,
+      folderPath: resolvedFolderPath,
     };
 
     res.status(201).json(fileRecord);
@@ -202,11 +231,12 @@ router.get('/:id/info', (req: Request, res: Response) => {
       iv: string;
       auth_tag: string;
       uploaded_at: string;
+      folder_path: string;
     };
 
     const row = db
       .prepare(
-        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at
+        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path
          FROM files WHERE id = ? AND user_id = ?`,
       )
       .get(req.params['id'], req.session.userId) as FileRow | undefined;
@@ -226,6 +256,7 @@ router.get('/:id/info', (req: Request, res: Response) => {
       iv: row.iv,
       authTag: row.auth_tag,
       uploadedAt: row.uploaded_at,
+      folderPath: row.folder_path,
     };
 
     res.json(fileRecord);

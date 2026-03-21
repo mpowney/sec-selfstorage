@@ -53,9 +53,18 @@ export function getDb(): Database.Database {
       iv TEXT NOT NULL,
       auth_tag TEXT NOT NULL,
       uploaded_at TEXT NOT NULL,
+      folder_path TEXT NOT NULL DEFAULT '',
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
   `);
+
+  // Migration: add folder_path column to existing databases
+  const hasFolder = (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).some(
+    (col) => col.name === 'folder_path',
+  );
+  if (!hasFolder) {
+    db.exec("ALTER TABLE files ADD COLUMN folder_path TEXT NOT NULL DEFAULT ''");
+  }
 
   return db;
 }

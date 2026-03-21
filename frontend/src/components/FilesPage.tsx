@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   makeStyles,
   tokens,
@@ -18,6 +18,8 @@ import {
   ProgressBar,
   Badge,
   Tooltip,
+  Input,
+  Label,
 } from '@fluentui/react-components';
 import {
   SignOutRegular,
@@ -25,8 +27,20 @@ import {
   DeleteRegular,
   DocumentRegular,
   FolderRegular,
+  FolderOpenRegular,
+  FolderAddRegular,
+  ImageRegular,
+  VideoRegular,
+  SoundWaveCircleRegular,
+  DocumentPdfRegular,
+  DocumentTextRegular,
+  CodeRegular,
+  ArchiveRegular,
+  EyeRegular,
+  HomeRegular,
+  ChevronRightRegular,
 } from '@fluentui/react-icons';
-import { listFiles, uploadFile, downloadFile, deleteFile, logout } from '../api';
+import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout } from '../api';
 import type { FileRecord } from '../api';
 import { formatFileSize, formatDate } from '../utils';
 import UploadArea from './UploadArea';
@@ -84,6 +98,23 @@ const useStyles = makeStyles({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: '8px',
+  },
+  filesSectionHeaderActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  breadcrumb: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    flexWrap: 'wrap',
+  },
+  breadcrumbSeparator: {
+    color: tokens.colorNeutralForeground3,
+    display: 'flex',
+    alignItems: 'center',
   },
   table: {
     width: '100%',
@@ -116,6 +147,12 @@ const useStyles = makeStyles({
     gap: '8px',
     minWidth: '180px',
   },
+  folderRow: {
+    cursor: 'pointer',
+    ':hover': {
+      backgroundColor: tokens.colorNeutralBackground2,
+    },
+  },
   emptyState: {
     display: 'flex',
     flexDirection: 'column',
@@ -142,6 +179,16 @@ const useStyles = makeStyles({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  previewOverlay: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    minHeight: '300px',
+    backgroundColor: tokens.colorNeutralBackground3,
+    borderRadius: tokens.borderRadiusMedium,
+    overflow: 'hidden',
+  },
 });
 
 interface UploadItem {
@@ -152,6 +199,12 @@ interface UploadItem {
   error?: string;
 }
 
+interface PreviewState {
+  file: FileRecord;
+  url: string;
+  mimeType: string;
+}
+
 interface FilesPageProps {
   username: string;
   userId: string;
@@ -159,22 +212,62 @@ interface FilesPageProps {
   onLogout: () => void;
 }
 
+function getFileTypeIcon(mimeType: string): React.ReactElement {
+  if (mimeType.startsWith('image/')) return <ImageRegular />;
+  if (mimeType.startsWith('video/')) return <VideoRegular />;
+  if (mimeType.startsWith('audio/')) return <SoundWaveCircleRegular />;
+  if (mimeType === 'application/pdf') return <DocumentPdfRegular />;
+  if (mimeType.startsWith('text/') || mimeType === 'application/rtf') return <DocumentTextRegular />;
+  if (
+    mimeType === 'application/json' ||
+    mimeType === 'application/javascript' ||
+    mimeType === 'application/typescript' ||
+    mimeType === 'application/xml' ||
+    mimeType === 'text/html' ||
+    mimeType === 'text/css' ||
+    mimeType === 'text/javascript'
+  )
+    return <CodeRegular />;
+  if (
+    mimeType === 'application/zip' ||
+    mimeType === 'application/x-zip-compressed' ||
+    mimeType === 'application/x-tar' ||
+    mimeType === 'application/gzip' ||
+    mimeType === 'application/x-7z-compressed' ||
+    mimeType === 'application/x-rar-compressed'
+  )
+    return <ArchiveRegular />;
+  return <DocumentRegular />;
+}
+
+function isViewable(mimeType: string): boolean {
+  return mimeType.startsWith('image/') || mimeType === 'application/pdf';
+}
+
 export default function FilesPage({ username, credentialId, onLogout }: FilesPageProps) {
   const styles = useStyles();
   const [files, setFiles] = useState<FileRecord[]>([]);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [currentFolder, setCurrentFolder] = useState('');
   const [filesLoading, setFilesLoading] = useState(true);
   const [filesError, setFilesError] = useState('');
   const [uploadQueue, setUploadQueue] = useState<UploadItem[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<FileRecord | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const previewUrlRef = useRef<string | null>(null);
 
-  const loadFiles = useCallback(async () => {
+  const loadFiles = useCallback(async (folder: string) => {
     setFilesLoading(true);
     setFilesError('');
     try {
-      const data = await listFiles();
-      setFiles(data);
+      const data = await listFiles(folder);
+      setFiles(data.files);
+      setFolders(data.folders);
     } catch (err) {
       setFilesError(err instanceof Error ? err.message : 'Failed to load files');
     } finally {
@@ -183,8 +276,17 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
   }, []);
 
   useEffect(() => {
-    void loadFiles();
-  }, [loadFiles]);
+    void loadFiles(currentFolder);
+  }, [loadFiles, currentFolder]);
+
+  // Clean up any outstanding preview object URL when the component unmounts
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+    };
+  }, []);
 
   async function handleLogout() {
     await logout();
@@ -199,7 +301,6 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
       status: 'pending',
     }));
     setUploadQueue((prev) => [...prev, ...newItems]);
-    // Start uploading immediately
     for (const item of newItems) {
       void startUpload(item);
     }
@@ -210,7 +311,7 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
       prev.map((i) => (i.id === item.id ? { ...i, status: 'uploading' } : i)),
     );
     try {
-      const result = await uploadFile(item.file, credentialId, (pct) => {
+      const result = await uploadFile(item.file, credentialId, currentFolder, (pct) => {
         setUploadQueue((prev) =>
           prev.map((i) => (i.id === item.id ? { ...i, progress: pct } : i)),
         );
@@ -218,8 +319,9 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
       setUploadQueue((prev) =>
         prev.map((i) => (i.id === item.id ? { ...i, status: 'done', progress: 100 } : i)),
       );
-      setFiles((prev) => [result, ...prev]);
-      // Remove done items after a short delay
+      if (result.folderPath === currentFolder) {
+        setFiles((prev) => [result, ...prev]);
+      }
       setTimeout(() => {
         setUploadQueue((prev) => prev.filter((i) => i.id !== item.id));
       }, 2000);
@@ -243,6 +345,31 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
     }
   }
 
+  async function handlePreview(file: FileRecord) {
+    setActionError('');
+    setPreviewLoadingId(file.id);
+    try {
+      const { url, mimeType } = await previewFile(file.id);
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+      previewUrlRef.current = url;
+      setPreview({ file, url, mimeType });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Preview failed');
+    } finally {
+      setPreviewLoadingId(null);
+    }
+  }
+
+  function handleClosePreview() {
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+    setPreview(null);
+  }
+
   async function handleDeleteConfirm() {
     if (!deleteTarget) return;
     setDeleteLoading(true);
@@ -257,6 +384,32 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
       setDeleteLoading(false);
     }
   }
+
+  function navigateToFolder(folder: string) {
+    setCurrentFolder(folder);
+  }
+
+  function getBreadcrumbSegments(): Array<{ label: string; path: string }> {
+    if (!currentFolder) return [];
+    const parts = currentFolder.split('/');
+    return parts.map((part, i) => ({
+      label: part,
+      path: parts.slice(0, i + 1).join('/'),
+    }));
+  }
+
+  function handleNewFolder() {
+    // Only allow alphanumeric, spaces, hyphens, underscores, and dots in folder names
+    const name = newFolderName.trim().replace(/[^a-zA-Z0-9 ._-]/g, '');
+    if (!name) return;
+    const newPath = currentFolder ? `${currentFolder}/${name}` : name;
+    setNewFolderName('');
+    setNewFolderOpen(false);
+    navigateToFolder(newPath);
+  }
+
+  const breadcrumbSegments = getBreadcrumbSegments();
+  const isEmpty = folders.length === 0 && files.length === 0;
 
   return (
     <div className={styles.root}>
@@ -283,7 +436,7 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
         {/* Upload Section */}
         <section className={styles.uploadSection}>
           <Text weight="semibold" size={400}>
-            Upload Files
+            Upload Files{currentFolder ? ` to /${currentFolder}` : ''}
           </Text>
           <UploadArea
             onFilesSelected={handleFilesSelected}
@@ -336,9 +489,47 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
             <Text weight="semibold" size={400}>
               Your Files
             </Text>
-            <Button appearance="subtle" size="small" onClick={() => void loadFiles()}>
-              Refresh
+            <div className={styles.filesSectionHeaderActions}>
+              <Button
+                appearance="subtle"
+                size="small"
+                icon={<FolderAddRegular />}
+                onClick={() => setNewFolderOpen(true)}
+              >
+                New Folder
+              </Button>
+              <Button appearance="subtle" size="small" onClick={() => void loadFiles(currentFolder)}>
+                Refresh
+              </Button>
+            </div>
+          </div>
+
+          {/* Breadcrumb navigation */}
+          <div className={styles.breadcrumb}>
+            <Button
+              appearance="subtle"
+              size="small"
+              icon={<HomeRegular />}
+              onClick={() => navigateToFolder('')}
+              style={{ minWidth: 0, padding: '4px 8px' }}
+            >
+              Home
             </Button>
+            {breadcrumbSegments.map((seg) => (
+              <React.Fragment key={seg.path}>
+                <span className={styles.breadcrumbSeparator}>
+                  <ChevronRightRegular fontSize={14} />
+                </span>
+                <Button
+                  appearance="subtle"
+                  size="small"
+                  onClick={() => navigateToFolder(seg.path)}
+                  style={{ minWidth: 0, padding: '4px 8px' }}
+                >
+                  {seg.label}
+                </Button>
+              </React.Fragment>
+            ))}
           </div>
 
           {actionError && (
@@ -357,13 +548,17 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
             <div style={{ display: 'flex', justifyContent: 'center', padding: '32px' }}>
               <Spinner label="Loading files..." />
             </div>
-          ) : files.length === 0 ? (
+          ) : isEmpty ? (
             <div className={styles.emptyState}>
-              <FolderRegular fontSize={56} />
+              <FolderOpenRegular fontSize={56} />
               <Text size={400} weight="semibold">
-                No files yet
+                {currentFolder ? 'This folder is empty' : 'No files yet'}
               </Text>
-              <Text size={300}>Upload your first file using the area above.</Text>
+              <Text size={300}>
+                {currentFolder
+                  ? 'Upload files here or navigate to another folder.'
+                  : 'Upload your first file using the area above.'}
+              </Text>
             </div>
           ) : (
             <table className={styles.table}>
@@ -377,11 +572,52 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
                 </tr>
               </thead>
               <tbody>
+                {folders.map((folderName) => {
+                  const folderPath = currentFolder
+                    ? `${currentFolder}/${folderName}`
+                    : folderName;
+                  return (
+                    <tr
+                      key={`folder:${folderPath}`}
+                      className={styles.folderRow}
+                      onClick={() => navigateToFolder(folderPath)}
+                    >
+                      <td className={styles.td}>
+                        <div className={styles.filenameCell}>
+                          <FolderRegular
+                            fontSize={18}
+                            style={{ flexShrink: 0, color: 'var(--colorBrandForeground1)' }}
+                          />
+                          <Text truncate title={folderName}>
+                            {folderName}
+                          </Text>
+                        </div>
+                      </td>
+                      <td className={styles.td}>—</td>
+                      <td className={styles.td}>
+                        <Badge appearance="tint" color="subtle">
+                          Folder
+                        </Badge>
+                      </td>
+                      <td className={styles.td}>—</td>
+                      <td className={styles.tdActions} />
+                    </tr>
+                  );
+                })}
                 {files.map((file) => (
                   <tr key={file.id}>
                     <td className={styles.td}>
                       <div className={styles.filenameCell}>
-                        <DocumentRegular fontSize={18} style={{ flexShrink: 0, color: 'var(--colorBrandForeground1)' }} />
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            color: 'var(--colorBrandForeground1)',
+                            display: 'flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          {getFileTypeIcon(file.mimeType)}
+                        </span>
                         <Text truncate title={file.filename}>
                           {file.filename}
                         </Text>
@@ -395,6 +631,18 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
                     </td>
                     <td className={styles.td}>{formatDate(file.uploadedAt)}</td>
                     <td className={styles.tdActions}>
+                      {isViewable(file.mimeType) && (
+                        <Tooltip content="Preview" relationship="label">
+                          <Button
+                            appearance="subtle"
+                            size="small"
+                            icon={previewLoadingId === file.id ? <Spinner size="tiny" /> : <EyeRegular />}
+                            onClick={() => void handlePreview(file)}
+                            aria-label={`Preview ${file.filename}`}
+                            disabled={previewLoadingId !== null}
+                          />
+                        </Tooltip>
+                      )}
                       <Tooltip content="Download" relationship="label">
                         <Button
                           appearance="subtle"
@@ -453,6 +701,104 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
                 icon={deleteLoading ? <Spinner size="tiny" /> : <DeleteRegular />}
               >
                 {deleteLoading ? 'Deleting...' : 'Delete'}
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+
+      {/* New Folder Dialog */}
+      <Dialog
+        open={newFolderOpen}
+        onOpenChange={(_, data) => {
+          if (!data.open) {
+            setNewFolderOpen(false);
+            setNewFolderName('');
+          }
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>New Folder</DialogTitle>
+            <DialogContent>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <Label htmlFor="new-folder-name">Folder name</Label>
+                <Input
+                  id="new-folder-name"
+                  value={newFolderName}
+                  onChange={(_, d) => setNewFolderName(d.value)}
+                  placeholder="e.g. Documents"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleNewFolder();
+                  }}
+                />
+              </div>
+            </DialogContent>
+            <DialogActions>
+              <DialogTrigger disableButtonEnhancement>
+                <Button appearance="secondary">Cancel</Button>
+              </DialogTrigger>
+              <Button
+                appearance="primary"
+                onClick={handleNewFolder}
+                disabled={!newFolderName.trim()}
+              >
+                Create & Navigate
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+
+      {/* Preview / Lightbox Dialog */}
+      <Dialog
+        open={preview !== null}
+        onOpenChange={(_, data) => {
+          if (!data.open) handleClosePreview();
+        }}
+      >
+        <DialogSurface style={{ maxWidth: '90vw', width: 'auto' }}>
+          <DialogBody>
+            <DialogTitle>{preview?.file.filename}</DialogTitle>
+            <DialogContent>
+              {preview && (
+                <div className={styles.previewOverlay}>
+                  {preview.mimeType.startsWith('image/') ? (
+                    <img
+                      src={preview.url}
+                      alt={preview.file.filename}
+                      style={{
+                        maxWidth: '80vw',
+                        maxHeight: '70vh',
+                        objectFit: 'contain',
+                        borderRadius: tokens.borderRadiusMedium,
+                      }}
+                    />
+                  ) : preview.mimeType === 'application/pdf' ? (
+                    <iframe
+                      src={preview.url}
+                      title={preview.file.filename}
+                      style={{
+                        width: '75vw',
+                        height: '70vh',
+                        border: 'none',
+                        borderRadius: tokens.borderRadiusMedium,
+                      }}
+                    />
+                  ) : null}
+                </div>
+              )}
+            </DialogContent>
+            <DialogActions>
+              <Button
+                appearance="subtle"
+                icon={<ArrowDownloadRegular />}
+                onClick={() => preview && void handleDownload(preview.file)}
+              >
+                Download
+              </Button>
+              <Button appearance="primary" onClick={handleClosePreview}>
+                Close
               </Button>
             </DialogActions>
           </DialogBody>
