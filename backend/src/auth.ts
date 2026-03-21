@@ -84,14 +84,17 @@ router.get('/register/start/:username', async (req: Request, res: Response) => {
 // POST /auth/register/finish
 router.post('/register/finish', async (req: Request, res: Response) => {
   try {
-    const { response, challengeId, username, displayName } = req.body as {
+    const { response, credential, challengeId, username, displayName } = req.body as {
       response: unknown;
+      credential?: unknown;
       challengeId: string;
       username: string;
       displayName?: string;
     };
 
-    if (!response || !challengeId || !username) {
+    const webauthnResponse = response ?? credential;
+
+    if (!webauthnResponse || !challengeId || !username) {
       res.status(400).json({ error: 'Missing required fields' });
       return;
     }
@@ -109,7 +112,7 @@ router.post('/register/finish', async (req: Request, res: Response) => {
     }
 
     const verification = await verifyRegistrationResponse({
-      response: response as Parameters<typeof verifyRegistrationResponse>[0]['response'],
+      response: webauthnResponse as Parameters<typeof verifyRegistrationResponse>[0]['response'],
       expectedChallenge: challengeRow.challenge,
       expectedOrigin: RP_ORIGIN,
       expectedRPID: RP_ID,
@@ -132,7 +135,7 @@ router.post('/register/finish', async (req: Request, res: Response) => {
     }
 
     // Get transports from the response if available
-    const authResponse = response as { response?: { transports?: AuthenticatorTransportFuture[] } };
+    const authResponse = webauthnResponse as { response?: { transports?: AuthenticatorTransportFuture[] } };
     const transports: AuthenticatorTransportFuture[] = authResponse.response?.transports ?? [];
 
     // Store credential (credentialID is already base64url string, publicKey stored as hex)
@@ -213,12 +216,15 @@ router.post('/login/start', async (req: Request, res: Response) => {
 // POST /auth/login/finish
 router.post('/login/finish', async (req: Request, res: Response) => {
   try {
-    const { response, challengeId } = req.body as {
+    const { response, credential: legacyCredential, challengeId } = req.body as {
       response: unknown;
+      credential?: unknown;
       challengeId: string;
     };
 
-    if (!response || !challengeId) {
+    const webauthnResponse = response ?? legacyCredential;
+
+    if (!webauthnResponse || !challengeId) {
       res.status(400).json({ error: 'Missing required fields' });
       return;
     }
@@ -236,7 +242,7 @@ router.post('/login/finish', async (req: Request, res: Response) => {
     }
 
     // Get the credential ID from the response
-    const authResponse = response as { id?: string; rawId?: string };
+    const authResponse = webauthnResponse as { id?: string; rawId?: string };
     const responseCredentialId = authResponse.id ?? authResponse.rawId;
     if (!responseCredentialId) {
       res.status(400).json({ error: 'Missing credential ID in response' });
@@ -261,7 +267,7 @@ router.post('/login/finish', async (req: Request, res: Response) => {
     };
 
     const verification = await verifyAuthenticationResponse({
-      response: response as Parameters<typeof verifyAuthenticationResponse>[0]['response'],
+      response: webauthnResponse as Parameters<typeof verifyAuthenticationResponse>[0]['response'],
       expectedChallenge: challengeRow.challenge,
       expectedOrigin: RP_ORIGIN,
       expectedRPID: RP_ID,

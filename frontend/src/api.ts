@@ -82,7 +82,7 @@ export async function finishRegistration(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
-    body: JSON.stringify({ credential, challengeId, username, displayName }),
+    body: JSON.stringify({ response: credential, challengeId, username, displayName }),
   });
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Registration finish failed');
   return res.json() as Promise<{ success: boolean }>;
@@ -107,7 +107,7 @@ export async function finishLogin(
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
-    body: JSON.stringify({ credential, challengeId }),
+    body: JSON.stringify({ response: credential, challengeId }),
   });
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Login failed');
   return res.json() as Promise<{ success: boolean; userId: string; username: string; credentialId: string }>;
