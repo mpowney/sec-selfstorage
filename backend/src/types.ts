@@ -31,5 +31,6 @@ declare module 'express-session' {
     userId: string;
     username: string;
     challengeId: string;
+    csrfToken: string;
   }
 }

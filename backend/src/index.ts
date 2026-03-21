@@ -1,7 +1,8 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import session from 'express-session';
 import rateLimit from 'express-rate-limit';
+import { randomBytes } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { getDb } from './database.js';
@@ -36,12 +37,29 @@ app.use(
     cookie: {
       secure: process.env['NODE_ENV'] === 'production',
       httpOnly: true,
-      // sameSite: 'strict' prevents CSRF by not sending the cookie on cross-origin requests
       sameSite: 'strict',
       maxAge: 24 * 60 * 60 * 1000,
     },
   }),
 );
+
+// CSRF protection — synchronizer token pattern
+// GET /api/csrf-token returns a per-session token; all state-changing requests must
+// include it in the X-CSRF-Token header.
+function csrfProtection(req: Request, res: Response, next: NextFunction): void {
+  const safeMethod = /^(GET|HEAD|OPTIONS)$/i.test(req.method);
+  if (safeMethod) {
+    next();
+    return;
+  }
+  const sessionToken: string | undefined = req.session.csrfToken as string | undefined;
+  const headerToken = req.headers['x-csrf-token'];
+  if (!sessionToken || !headerToken || headerToken !== sessionToken) {
+    res.status(403).json({ error: 'Invalid CSRF token' });
+    return;
+  }
+  next();
+}
 
 // Rate limiters
 const authLimiter = rateLimit({
@@ -67,9 +85,22 @@ const staticLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// API routes
-app.use('/api/auth', authLimiter, authRouter);
-app.use('/api/files', fileLimiter, filesRouter);
+// Health check
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// CSRF token endpoint — frontend fetches this on startup
+app.get('/api/csrf-token', (req, res) => {
+  if (!req.session.csrfToken) {
+    req.session.csrfToken = randomBytes(32).toString('hex');
+  }
+  res.json({ csrfToken: req.session.csrfToken });
+});
+
+// API routes — CSRF protection applied to all state-changing requests
+app.use('/api/auth', authLimiter, csrfProtection, authRouter);
+app.use('/api/files', fileLimiter, csrfProtection, filesRouter);
 
 // Serve frontend static files in production
 const frontendDist = join(__dirname, '..', '..', 'frontend', 'dist');

@@ -39,16 +39,37 @@ export interface FileRecord {
   uploadedAt: string;
 }
 
+// CSRF token cache — fetched once per page load
+let cachedCsrfToken: string | null = null;
+
+export async function getCsrfToken(): Promise<string> {
+  if (cachedCsrfToken) return cachedCsrfToken;
+  const res = await fetch('/api/csrf-token', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to get CSRF token');
+  const data = await res.json() as { csrfToken: string };
+  cachedCsrfToken = data.csrfToken;
+  return cachedCsrfToken;
+}
+
+export function clearCsrfToken(): void {
+  cachedCsrfToken = null;
+}
+
+async function csrfHeaders(): Promise<Record<string, string>> {
+  const token = await getCsrfToken();
+  return { 'X-CSRF-Token': token };
+}
+
 export async function getAuthStatus(): Promise<AuthStatus> {
   const res = await fetch('/api/auth/status', { credentials: 'include' });
   if (!res.ok) throw new Error('Failed to get auth status');
-  return res.json();
+  return res.json() as Promise<AuthStatus>;
 }
 
 export async function startRegistration(username: string): Promise<RegistrationStartResponse> {
   const res = await fetch(`/api/auth/register/start/${encodeURIComponent(username)}`, { credentials: 'include' });
-  if (!res.ok) throw new Error((await res.json()).error || 'Registration start failed');
-  return res.json();
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Registration start failed');
+  return res.json() as Promise<RegistrationStartResponse>;
 }
 
 export async function finishRegistration(
@@ -59,23 +80,23 @@ export async function finishRegistration(
 ): Promise<{ success: boolean }> {
   const res = await fetch('/api/auth/register/finish', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
     body: JSON.stringify({ credential, challengeId, username, displayName }),
   });
-  if (!res.ok) throw new Error((await res.json()).error || 'Registration finish failed');
-  return res.json();
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Registration finish failed');
+  return res.json() as Promise<{ success: boolean }>;
 }
 
 export async function startLogin(username: string): Promise<AuthenticationStartResponse> {
   const res = await fetch('/api/auth/login/start', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
     body: JSON.stringify({ username }),
   });
-  if (!res.ok) throw new Error((await res.json()).error || 'Login start failed');
-  return res.json();
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Login start failed');
+  return res.json() as Promise<AuthenticationStartResponse>;
 }
 
 export async function finishLogin(
@@ -84,22 +105,27 @@ export async function finishLogin(
 ): Promise<{ success: boolean; userId: string; username: string; credentialId: string }> {
   const res = await fetch('/api/auth/login/finish', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
     body: JSON.stringify({ credential, challengeId }),
   });
-  if (!res.ok) throw new Error((await res.json()).error || 'Login failed');
-  return res.json();
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Login failed');
+  return res.json() as Promise<{ success: boolean; userId: string; username: string; credentialId: string }>;
 }
 
 export async function logout(): Promise<void> {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  await fetch('/api/auth/logout', {
+    method: 'POST',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
+  clearCsrfToken();
 }
 
 export async function listFiles(): Promise<FileRecord[]> {
   const res = await fetch('/api/files', { credentials: 'include' });
   if (!res.ok) throw new Error('Failed to list files');
-  return res.json();
+  return res.json() as Promise<FileRecord[]>;
 }
 
 export async function uploadFile(
@@ -107,6 +133,7 @@ export async function uploadFile(
   credentialId: string,
   onProgress?: (pct: number) => void,
 ): Promise<FileRecord> {
+  const csrfToken = await getCsrfToken();
   return new Promise((resolve, reject) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -114,6 +141,7 @@ export async function uploadFile(
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/files/upload');
     xhr.withCredentials = true;
+    xhr.setRequestHeader('X-CSRF-Token', csrfToken);
     if (onProgress) {
       xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
@@ -150,6 +178,10 @@ export async function downloadFile(fileId: string, filename: string): Promise<vo
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
-  const res = await fetch(`/api/files/${fileId}`, { method: 'DELETE', credentials: 'include' });
+  const res = await fetch(`/api/files/${fileId}`, {
+    method: 'DELETE',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
   if (!res.ok) throw new Error('Delete failed');
 }
