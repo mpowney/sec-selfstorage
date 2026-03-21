@@ -5,7 +5,6 @@ import {
   generateAuthenticationOptions,
   verifyAuthenticationResponse,
 } from '@simplewebauthn/server';
-import { isoBase64URL } from '@simplewebauthn/server/helpers';
 import type { AuthenticatorTransportFuture } from '@simplewebauthn/types';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from './database.js';
