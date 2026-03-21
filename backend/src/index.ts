@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import session from 'express-session';
+import rateLimit from 'express-rate-limit';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { getDb } from './database.js';
@@ -35,14 +36,32 @@ app.use(
     cookie: {
       secure: process.env['NODE_ENV'] === 'production',
       httpOnly: true,
+      sameSite: 'strict',
       maxAge: 24 * 60 * 60 * 1000,
     },
   }),
 );
 
+// Rate limiters
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
+const fileLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
 // API routes
-app.use('/api/auth', authRouter);
-app.use('/api/files', filesRouter);
+app.use('/api/auth', authLimiter, authRouter);
+app.use('/api/files', fileLimiter, filesRouter);
 
 // Serve frontend static files in production
 const frontendDist = join(__dirname, '..', '..', 'frontend', 'dist');
