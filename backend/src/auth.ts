@@ -292,7 +292,7 @@ router.post('/login/finish', async (req: Request, res: Response) => {
     req.session.userId = user.id;
     req.session.username = user.username;
 
-    res.json({ verified: true, userId: user.id, username: user.username });
+    res.json({ verified: true, userId: user.id, username: user.username, credentialId: credential.credential_id });
   } catch (err) {
     console.error('login/finish error:', err);
     res.status(500).json({ error: 'Failed to finish login' });
