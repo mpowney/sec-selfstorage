@@ -36,6 +36,7 @@ app.use(
     cookie: {
       secure: process.env['NODE_ENV'] === 'production',
       httpOnly: true,
+      // sameSite: 'strict' prevents CSRF by not sending the cookie on cross-origin requests
       sameSite: 'strict',
       maxAge: 24 * 60 * 60 * 1000,
     },
@@ -59,6 +60,13 @@ const fileLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' },
 });
 
+const staticLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // API routes
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/files', fileLimiter, filesRouter);
@@ -66,8 +74,8 @@ app.use('/api/files', fileLimiter, filesRouter);
 // Serve frontend static files in production
 const frontendDist = join(__dirname, '..', '..', 'frontend', 'dist');
 if (existsSync(frontendDist)) {
-  app.use(express.static(frontendDist));
-  app.get('*', (_req, res) => {
+  app.use(staticLimiter, express.static(frontendDist));
+  app.get('*', staticLimiter, (_req, res) => {
     res.sendFile(join(frontendDist, 'index.html'));
   });
 }
