@@ -888,7 +888,7 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                 onClick={handleNewFolder}
                 disabled={!newFolderName.trim()}
               >
-                Create & Navigate
+                Create
               </Button>
             </DialogActions>
           </DialogBody>
