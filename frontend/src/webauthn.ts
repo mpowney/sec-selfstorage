@@ -6,8 +6,12 @@ const PRF_SALT: ArrayBuffer = new TextEncoder().encode('sec-selfstorage-client-e
 interface PRFExtensionResult {
   results?: { first?: ArrayBuffer };
 }
+interface HMACGetSecretExtensionResult {
+  output1?: ArrayBuffer;
+}
 interface ExtensionResultsWithPRF {
   prf?: PRFExtensionResult;
+  hmacGetSecret?: HMACGetSecretExtensionResult;
 }
 
 // Magic marker prefix written at the start of every client-encrypted blob: bytes for "SCE1"
@@ -161,11 +165,10 @@ export async function browserRegister(
       ...p,
       type: p.type as PublicKeyCredentialType,
     })),
-    // Request PRF at registration so the authenticator initialises the hmac-secret
-    // extension for this credential. Without this, PRF will always return null at
-    // authentication time for CTAP2 security keys (YubiKeys, etc.).
+    // Request both modern PRF and legacy hmacCreateSecret at registration so the
+    // authenticator initialises hmac-secret across browser implementations.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    extensions: { ...options.extensions, prf: {} } as any,
+    extensions: { ...options.extensions, prf: {}, hmacCreateSecret: true } as any,
   };
 
   const credential = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential;
@@ -198,12 +201,14 @@ export async function browserAuthenticate(
       type: c.type as PublicKeyCredentialType,
       transports: c.transports as AuthenticatorTransport[] | undefined,
     })),
+    // Request both modern PRF and legacy hmacGetSecret forms so YubiKey-derived
+    // key material is returned on browsers that only implement one variant.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     extensions: {
       ...options.extensions,
-      // Request the PRF extension so the YubiKey produces a deterministic key-derivation secret.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      prf: { eval: { first: PRF_SALT } } as any,
-    },
+      prf: { eval: { first: PRF_SALT } },
+      hmacGetSecret: { salt1: PRF_SALT },
+    } as any,
   };
 
   const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential;
@@ -211,7 +216,7 @@ export async function browserAuthenticate(
 
   const response = credential.response as AuthenticatorAssertionResponse;
   const extensions = credential.getClientExtensionResults() as ExtensionResultsWithPRF;
-  const prfOutput = extensions.prf?.results?.first ?? null;
+  const prfOutput = extensions.prf?.results?.first ?? extensions.hmacGetSecret?.output1 ?? null;
 
   return {
     response: {
