@@ -16,9 +16,13 @@ import {
   Field,
   Spinner,
 } from '@fluentui/react-components';
-import { LockClosedRegular, KeyRegular } from '@fluentui/react-icons';
+import { LockClosedRegular, KeyRegular, SettingsRegular } from '@fluentui/react-icons';
 import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
 import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
+import { Logger } from '../logger';
+import DebugScreen from './DebugScreen';
+
+const logger = new Logger('LoginPage');
 
 const useStyles = makeStyles({
   root: {
@@ -64,6 +68,11 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     fontSize: tokens.fontSizeBase200,
   },
+  debugButtonRow: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    marginTop: '8px',
+  },
 });
 
 interface LoginPageProps {
@@ -75,6 +84,7 @@ type TabValue = 'signin' | 'register';
 export default function LoginPage({ onLogin }: LoginPageProps) {
   const styles = useStyles();
   const [activeTab, setActiveTab] = useState<TabValue>('signin');
+  const [debugOpen, setDebugOpen] = useState(false);
 
   // Sign-in state
   const [signInUsername, setSignInUsername] = useState('');
@@ -96,16 +106,61 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setSignInError('');
     setSignInStatus('');
     setSignInLoading(true);
+    logger.info('handleSignIn: starting sign-in flow', { username: signInUsername.trim() });
     try {
       setSignInStatus('Starting authentication...');
+      logger.info('handleSignIn: calling startLogin API', { username: signInUsername.trim() });
       const { options, challengeId } = await startLogin(signInUsername.trim());
+      logger.info('handleSignIn: received challenge from server', {
+        challengeId,
+        challenge: options.challenge,
+        rpId: options.rpId,
+        allowCredentials: options.allowCredentials,
+        userVerification: options.userVerification,
+      });
+
       setSignInStatus('Touch your YubiKey...');
+      logger.info('handleSignIn: calling browserAuthenticate — waiting for authenticator interaction');
       const { response: credential, prfOutput } = await browserAuthenticate(options);
+      logger.info('handleSignIn: browserAuthenticate returned', {
+        credentialId: credential.id,
+        prfOutputPresent: prfOutput !== null,
+        prfOutputByteLength: prfOutput?.byteLength ?? null,
+      });
+
       setSignInStatus('Verifying...');
+      logger.info('handleSignIn: calling finishLogin API', {
+        credentialId: credential.id,
+        hasPrfOutput: !!prfOutput,
+      });
       const result = await finishLogin(credential, challengeId, !!prfOutput);
-      const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
+      logger.info('handleSignIn: finishLogin succeeded', {
+        userId: result.userId,
+        username: result.username,
+        credentialId: result.credentialId,
+      });
+
+      let clientKey: CryptoKey | null = null;
+      if (prfOutput) {
+        logger.info('handleSignIn: PRF output present — deriving client encryption key');
+        clientKey = await deriveClientKey(prfOutput);
+        logger.info('handleSignIn: client encryption key derived successfully');
+      } else {
+        logger.warn('handleSignIn: PRF output absent — client encryption key will be null; E2E encryption unavailable');
+      }
+
+      logger.info('handleSignIn: login complete, calling onLogin callback', {
+        userId: result.userId,
+        username: result.username,
+        credentialId: result.credentialId,
+        clientKeyPresent: clientKey !== null,
+      });
       onLogin(result.userId, result.username, result.credentialId, clientKey);
     } catch (err) {
+      logger.error('handleSignIn: sign-in failed', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       setSignInError(err instanceof Error ? err.message : 'Sign in failed');
       setSignInStatus('');
     } finally {
@@ -120,18 +175,53 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setRegStatus('');
     setRegSuccess(false);
     setRegLoading(true);
+    logger.info('handleRegister: starting registration flow', {
+      username: regUsername.trim(),
+      displayName: regDisplayName.trim() || regUsername.trim(),
+    });
     try {
       setRegStatus('Starting registration...');
+      logger.info('handleRegister: calling startRegistration API', { username: regUsername.trim() });
       const { options, challengeId } = await startRegistration(regUsername.trim());
+      logger.info('handleRegister: received registration options from server', {
+        challengeId,
+        challenge: options.challenge,
+        rpId: options.rp.id,
+        rpName: options.rp.name,
+        userId: options.user.id,
+        userName: options.user.name,
+        pubKeyCredParams: options.pubKeyCredParams,
+        authenticatorSelection: options.authenticatorSelection,
+      });
+
       setRegStatus('Touch your YubiKey to register...');
+      logger.info('handleRegister: calling browserRegister — waiting for authenticator interaction');
       const credential = await browserRegister(options);
+      logger.info('handleRegister: browserRegister returned', {
+        credentialId: credential.id,
+        credentialType: credential.type,
+        transports: credential.response.transports,
+        clientExtensionResults: credential.clientExtensionResults,
+      });
+
       setRegStatus('Finishing registration...');
+      logger.info('handleRegister: calling finishRegistration API', {
+        credentialId: credential.id,
+        username: regUsername.trim(),
+        displayName: regDisplayName.trim() || regUsername.trim(),
+      });
       await finishRegistration(credential, challengeId, regUsername.trim(), regDisplayName.trim() || regUsername.trim());
+      logger.info('handleRegister: registration complete — user can now sign in');
+
       setRegSuccess(true);
       setRegStatus('');
       setRegUsername('');
       setRegDisplayName('');
     } catch (err) {
+      logger.error('handleRegister: registration failed', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       setRegError(err instanceof Error ? err.message : 'Registration failed');
       setRegStatus('');
     } finally {
@@ -256,7 +346,22 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             </Text>
           </form>
         )}
+
+        {/* Discrete debug cog — reduced opacity to keep it unobtrusive */}
+        <div className={styles.debugButtonRow}>
+          <Button
+            appearance="subtle"
+            size="small"
+            icon={<SettingsRegular />}
+            onClick={() => setDebugOpen(true)}
+            style={{ opacity: 0.4 }}
+            title="Open debug log"
+            aria-label="Open debug log"
+          />
+        </div>
       </Card>
+
+      <DebugScreen open={debugOpen} onClose={() => setDebugOpen(false)} />
     </div>
   );
 }

@@ -1,3 +1,7 @@
+import { Logger } from './logger';
+
+const logger = new Logger('webauthn');
+
 // PRF salt — a fixed application-specific constant; all clients must use the same value
 // so that the YubiKey produces the same PRF output on every authentication
 const PRF_SALT: ArrayBuffer = new TextEncoder().encode('sec-selfstorage-client-encryption-v1').buffer as ArrayBuffer;
@@ -15,12 +19,24 @@ const CLIENT_ENC_MAGIC = new Uint8Array([0x53, 0x43, 0x45, 0x31]);
 const MAGIC_LEN = 4;
 const IV_LEN = 12;
 
+/** Convert an ArrayBuffer to a lowercase hex string for logging. */
+function bufferToHex(buf: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 /**
  * Derive a non-extractable AES-256-GCM key from the raw PRF output using HKDF.
  */
 export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey> {
+  logger.info('deriveClientKey: starting HKDF derivation', {
+    prfOutputByteLength: prfOutput.byteLength,
+    prfOutputHex: bufferToHex(prfOutput),
+  });
   const baseKey = await crypto.subtle.importKey('raw', prfOutput, { name: 'HKDF' }, false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
+  logger.info('deriveClientKey: base key imported, deriving AES-256-GCM key via HKDF-SHA-256');
+  const key = await crypto.subtle.deriveKey(
     {
       name: 'HKDF',
       hash: 'SHA-256',
@@ -32,6 +48,12 @@ export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey
     false,
     ['encrypt', 'decrypt'],
   );
+  logger.info('deriveClientKey: AES-256-GCM client key derived successfully', {
+    algorithm: key.algorithm,
+    extractable: key.extractable,
+    usages: key.usages,
+  });
+  return key;
 }
 
 /**
@@ -39,8 +61,14 @@ export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey
  * Output format: [4-byte magic] [12-byte IV] [AES-GCM ciphertext + 16-byte auth tag]
  */
 export async function clientEncryptFile(plaintext: ArrayBuffer, key: CryptoKey): Promise<ArrayBuffer> {
+  logger.info('clientEncryptFile: encrypting file', { plaintextByteLength: plaintext.byteLength });
   const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
+  logger.info('clientEncryptFile: generated random IV', { ivHex: bufferToHex(iv.buffer) });
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
+  logger.info('clientEncryptFile: AES-GCM encryption complete', {
+    ciphertextByteLength: ciphertext.byteLength,
+    totalOutputByteLength: MAGIC_LEN + IV_LEN + ciphertext.byteLength,
+  });
   const out = new Uint8Array(MAGIC_LEN + IV_LEN + ciphertext.byteLength);
   out.set(CLIENT_ENC_MAGIC, 0);
   out.set(iv, MAGIC_LEN);
@@ -57,14 +85,30 @@ export async function clientDecryptFile(data: ArrayBuffer, key: CryptoKey | null
   const bytes = new Uint8Array(data);
   const isClientEncrypted =
     bytes.length >= MAGIC_LEN + IV_LEN && CLIENT_ENC_MAGIC.every((b, i) => bytes[i] === b);
-  if (!isClientEncrypted) return data;
-  if (!key)
+  logger.info('clientDecryptFile: checking magic marker', {
+    dataByteLength: data.byteLength,
+    isClientEncrypted,
+    hasKey: key !== null,
+    firstBytesHex: bufferToHex(bytes.slice(0, Math.min(8, bytes.length)).buffer),
+  });
+  if (!isClientEncrypted) {
+    logger.info('clientDecryptFile: no magic marker found — returning data as-is (server-only encryption)');
+    return data;
+  }
+  if (!key) {
+    logger.warn('clientDecryptFile: file is client-encrypted but no client key is available');
     throw new Error(
       'This file is end-to-end encrypted. Sign out and sign in again to unlock it.',
     );
+  }
   const iv = bytes.slice(MAGIC_LEN, MAGIC_LEN + IV_LEN);
-  const ciphertext = bytes.slice(MAGIC_LEN + IV_LEN);
-  return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  logger.info('clientDecryptFile: decrypting with AES-GCM', {
+    ivHex: bufferToHex(iv.buffer),
+    encryptedDataByteLength: bytes.length - MAGIC_LEN - IV_LEN,
+  });
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, bytes.slice(MAGIC_LEN + IV_LEN));
+  logger.info('clientDecryptFile: decryption successful', { plaintextByteLength: plaintext.byteLength });
+  return plaintext;
 }
 
 // Helper to convert base64url to ArrayBuffer
@@ -145,6 +189,17 @@ export type AuthenticationResult = {
 export async function browserRegister(
   options: PublicKeyCredentialCreationOptionsJSON,
 ): Promise<RegistrationResponseJSON> {
+  logger.info('browserRegister: preparing PublicKeyCredentialCreationOptions', {
+    challenge: options.challenge,
+    rpId: options.rp.id,
+    rpName: options.rp.name,
+    userId: options.user.id,
+    userName: options.user.name,
+    userDisplayName: options.user.displayName,
+    pubKeyCredParams: options.pubKeyCredParams,
+    authenticatorSelection: options.authenticatorSelection,
+    excludeCredentialsCount: options.excludeCredentials?.length ?? 0,
+  });
   const publicKey: PublicKeyCredentialCreationOptions = {
     ...options,
     challenge: base64urlToArrayBuffer(options.challenge),
@@ -168,11 +223,24 @@ export async function browserRegister(
     extensions: { ...options.extensions, prf: {} } as any,
   };
 
+  logger.info('browserRegister: calling navigator.credentials.create — waiting for user gesture (touch authenticator)');
   const credential = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential;
   if (!credential) throw new Error('No credential returned');
+  logger.info('browserRegister: credential created', {
+    credentialId: credential.id,
+    credentialType: credential.type,
+    rawIdHex: bufferToHex(credential.rawId),
+  });
 
   const response = credential.response as AuthenticatorAttestationResponse;
   const transports = response.getTransports ? response.getTransports() : [];
+  const extensionResults = credential.getClientExtensionResults();
+  logger.info('browserRegister: registration complete', {
+    transports,
+    clientExtensionResults: extensionResults,
+    // Log whether PRF was initialised at registration (required for later auth-time PRF use)
+    prfEnabled: !!(extensionResults as Record<string, unknown>)['prf'],
+  });
 
   return {
     id: credential.id,
@@ -183,13 +251,20 @@ export async function browserRegister(
       transports,
     },
     type: credential.type,
-    clientExtensionResults: credential.getClientExtensionResults(),
+    clientExtensionResults: extensionResults,
   };
 }
 
 export async function browserAuthenticate(
   options: PublicKeyCredentialRequestOptionsJSON,
 ): Promise<AuthenticationResult> {
+  logger.info('browserAuthenticate: preparing PublicKeyCredentialRequestOptions', {
+    challenge: options.challenge,
+    rpId: options.rpId,
+    userVerification: options.userVerification,
+    allowCredentials: options.allowCredentials?.map((c) => ({ id: c.id, type: c.type, transports: c.transports })),
+    prfSaltHex: bufferToHex(PRF_SALT),
+  });
   const publicKey: PublicKeyCredentialRequestOptions = {
     ...options,
     challenge: base64urlToArrayBuffer(options.challenge),
@@ -206,12 +281,39 @@ export async function browserAuthenticate(
     },
   };
 
+  logger.info('browserAuthenticate: calling navigator.credentials.get — waiting for user gesture (touch authenticator)');
   const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential;
   if (!credential) throw new Error('No credential returned');
+  logger.info('browserAuthenticate: credential assertion received', {
+    credentialId: credential.id,
+    credentialType: credential.type,
+    rawIdHex: bufferToHex(credential.rawId),
+  });
 
   const response = credential.response as AuthenticatorAssertionResponse;
   const extensions = credential.getClientExtensionResults() as ExtensionResultsWithPRF;
   const prfOutput = extensions.prf?.results?.first ?? null;
+
+  logger.info('browserAuthenticate: parsed assertion response', {
+    authenticatorDataByteLength: response.authenticatorData.byteLength,
+    authenticatorDataHex: bufferToHex(response.authenticatorData),
+    signatureByteLength: response.signature.byteLength,
+    userHandleHex: response.userHandle ? bufferToHex(response.userHandle) : null,
+    prfOutputPresent: prfOutput !== null,
+    prfOutputHex: prfOutput ? bufferToHex(prfOutput) : null,
+    prfOutputByteLength: prfOutput ? prfOutput.byteLength : null,
+    clientExtensionResults: extensions,
+  });
+
+  if (prfOutput === null) {
+    logger.warn(
+      'browserAuthenticate: PRF output is null — authenticator does not support PRF or hmac-secret extension. ' +
+      'Client-side encryption key cannot be derived from this credential. ' +
+      'This is expected on iOS Safari with NFC/USB security keys.',
+    );
+  } else {
+    logger.info('browserAuthenticate: PRF output received — client encryption key can be derived');
+  }
 
   return {
     response: {
