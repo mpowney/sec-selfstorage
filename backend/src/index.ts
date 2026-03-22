@@ -43,7 +43,10 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env['NODE_ENV'] === 'production',
+      // 'auto' sets Secure based on req.secure, which correctly reflects
+      // X-Forwarded-Proto once trust proxy is configured — avoids the
+      // cookie-domain mismatch that causes a new session on every request.
+      secure: 'auto',
       httpOnly: true,
       sameSite: 'strict',
       maxAge: 24 * 60 * 60 * 1000,
@@ -167,8 +170,8 @@ app.listen(PORT, () => {
   console.log(`  RP_NAME:     ${process.env['RP_NAME'] ?? 'SecSelfStorage'}`);
   console.log(`  RP_ORIGIN:   ${process.env['RP_ORIGIN'] ?? 'http://localhost:3000'}`);
   console.log(`  DATA_DIR:    ${process.env['DATA_DIR'] ?? './data'}`);
-  console.log(`  NODE_ENV:    ${process.env['NODE_ENV'] ?? '(unset — cookie.secure=false)'}`);
+  console.log(`  NODE_ENV:    ${process.env['NODE_ENV'] ?? '(unset)'}`);
   console.log(`  TRUST_PROXY: ${process.env['TRUST_PROXY'] ?? '(unset)'}  →  effective trust proxy = ${JSON.stringify(app.get('trust proxy'))}`);
-  console.log(`  cookie.secure: ${process.env['NODE_ENV'] === 'production'}`);
+  console.log(`  cookie.secure: auto (follows req.secure / X-Forwarded-Proto)`);
   console.log(`  DEBUG_REQUESTS: ${debugRequests ? 'enabled' : 'disabled (set DEBUG_REQUESTS=1 to enable)'}`);
 });
