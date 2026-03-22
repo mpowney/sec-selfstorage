@@ -13,3 +13,15 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* Prevent iOS Safari from zooming in when inputs receive focus.
+   iOS zooms when the focused element's computed font-size is below 16px.
+   The .ios class is added by main.tsx only on iOS / iPadOS devices, so this
+   rule has no effect on desktop browsers.
+   !important is needed to override component library (Fluent UI / Griffel) class styles,
+   which have higher specificity than a bare element selector. */
+html.ios input,
+html.ios textarea,
+html.ios select {
+  font-size: 16px !important;
+}

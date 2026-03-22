@@ -168,6 +168,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 placeholder="Enter your username"
                 disabled={signInLoading}
                 autoComplete="username"
+                autoCapitalize="none"
               />
             </Field>
 
@@ -213,6 +214,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 placeholder="Choose a username"
                 disabled={regLoading}
                 autoComplete="username"
+                autoCapitalize="none"
               />
             </Field>
 
