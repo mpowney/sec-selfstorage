@@ -5,6 +5,7 @@ import LoginPage from './components/LoginPage';
 import FilesPage from './components/FilesPage';
 import AdminLoginPage from './components/AdminLoginPage';
 import AdminDashboard from './components/AdminDashboard';
+import DebugScreen from './components/DebugScreen';
 
 const useStyles = makeStyles({
   loading: {
@@ -25,6 +26,7 @@ export default function App() {
   const [userId, setUserId] = useState<string | undefined>();
   const [credentialId, setCredentialId] = useState<string | undefined>();
   const [clientKey, setClientKey] = useState<CryptoKey | null>(null);
+  const [debugOpen, setDebugOpen] = useState(false);
 
   // Admin state
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
@@ -86,31 +88,39 @@ export default function App() {
   // Regular user route
   if (!authenticated) {
     return (
-      <LoginPage
-        onLogin={(uid, uname, credId, key) => {
-          setUserId(uid);
-          setUsername(uname);
-          setCredentialId(credId);
-          setClientKey(key);
-          setAuthenticated(true);
-        }}
-      />
+      <>
+        <LoginPage
+          onLogin={(uid, uname, credId, key) => {
+            setUserId(uid);
+            setUsername(uname);
+            setCredentialId(credId);
+            setClientKey(key);
+            setAuthenticated(true);
+          }}
+          onOpenDebug={() => setDebugOpen(true)}
+        />
+        <DebugScreen open={debugOpen} onClose={() => setDebugOpen(false)} />
+      </>
     );
   }
 
   return (
-    <FilesPage
-      username={username ?? ''}
-      userId={userId ?? ''}
-      credentialId={credentialId ?? ''}
-      clientKey={clientKey}
-      onLogout={() => {
-        setAuthenticated(false);
-        setUsername(undefined);
-        setUserId(undefined);
-        setCredentialId(undefined);
-        setClientKey(null);
-      }}
-    />
+    <>
+      <FilesPage
+        username={username ?? ''}
+        userId={userId ?? ''}
+        credentialId={credentialId ?? ''}
+        clientKey={clientKey}
+        onLogout={() => {
+          setAuthenticated(false);
+          setUsername(undefined);
+          setUserId(undefined);
+          setCredentialId(undefined);
+          setClientKey(null);
+        }}
+        onOpenDebug={() => setDebugOpen(true)}
+      />
+      <DebugScreen open={debugOpen} onClose={() => setDebugOpen(false)} />
+    </>
   );
 }
