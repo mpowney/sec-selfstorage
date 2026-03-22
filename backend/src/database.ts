@@ -90,5 +90,13 @@ export function getDb(): Database.Database {
     db.exec('ALTER TABLE users ADD COLUMN last_login_e2e INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Migration: add encryption_salt column to existing databases.
+  // This 32-byte random hex salt is used for PBKDF2 passphrase-based key derivation —
+  // the passphrase fallback for clients where WebAuthn PRF is unavailable (e.g. iOS
+  // Safari with NFC security keys).
+  if (!usersTableInfo.some((col) => col.name === 'encryption_salt')) {
+    db.exec("ALTER TABLE users ADD COLUMN encryption_salt TEXT NOT NULL DEFAULT ''");
+  }
+
   return db;
 }

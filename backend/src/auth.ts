@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { randomBytes } from 'crypto';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -129,9 +130,14 @@ router.post('/register/finish', async (req: Request, res: Response) => {
     let userId = challengeRow.user_id;
     if (!userId) {
       userId = uuidv4();
+      // Generate a random 32-byte salt for passphrase-based PBKDF2 key derivation.
+      // This salt is used by clients that cannot use the WebAuthn PRF extension
+      // (e.g. iOS Safari with NFC security keys) to derive a consistent E2E key from
+      // a user-supplied passphrase without storing the passphrase on the server.
+      const encryptionSalt = randomBytes(32).toString('hex');
       db.prepare(
-        'INSERT INTO users (id, username, display_name, created_at) VALUES (?, ?, ?, ?)',
-      ).run(userId, username, displayName ?? username, new Date().toISOString());
+        'INSERT INTO users (id, username, display_name, created_at, encryption_salt) VALUES (?, ?, ?, ?, ?)',
+      ).run(userId, username, displayName ?? username, new Date().toISOString(), encryptionSalt);
     }
 
     // Get transports from the response if available
@@ -172,9 +178,9 @@ router.post('/login/start', async (req: Request, res: Response) => {
 
     const db = getDb();
 
-    type UserRow = { id: string; username: string; display_name: string };
+    type UserRow = { id: string; username: string; display_name: string; encryption_salt: string };
     const user = db
-      .prepare('SELECT id, username, display_name FROM users WHERE username = ?')
+      .prepare('SELECT id, username, display_name, encryption_salt FROM users WHERE username = ?')
       .get(username) as UserRow | undefined;
 
     if (!user) {
@@ -206,7 +212,18 @@ router.post('/login/start', async (req: Request, res: Response) => {
       new Date().toISOString(),
     );
 
-    res.json({ options, challengeId });
+    // Lazily backfill the encryption salt for accounts created before this feature.
+    // New accounts receive their salt at registration time; older accounts get one
+    // generated here on their first login after the upgrade.
+    let encryptionSalt = user.encryption_salt;
+    if (!encryptionSalt) {
+      encryptionSalt = randomBytes(32).toString('hex');
+      db.prepare('UPDATE users SET encryption_salt = ? WHERE id = ?').run(encryptionSalt, user.id);
+    }
+
+    // Return the user's PBKDF2 salt alongside the WebAuthn challenge so the client
+    // can derive an E2E key from a passphrase when WebAuthn PRF is unavailable.
+    res.json({ options, challengeId, encryptionSalt });
   } catch (err) {
     console.error('login/start error:', err);
     res.status(500).json({ error: 'Failed to start login' });
@@ -312,6 +329,30 @@ router.post('/login/finish', async (req: Request, res: Response) => {
     console.error('login/finish error:', err);
     res.status(500).json({ error: 'Failed to finish login' });
   }
+});
+
+// GET /auth/encryption-salt
+// Returns the PBKDF2 salt for the currently authenticated user.  This allows a
+// client that already holds a valid session (e.g. after a page refresh) to derive
+// the E2E key from a passphrase without having to go through the full login flow.
+router.get('/encryption-salt', (req: Request, res: Response) => {
+  if (!req.session.userId) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return;
+  }
+
+  const db = getDb();
+  type UserRow = { encryption_salt: string };
+  const user = db
+    .prepare('SELECT encryption_salt FROM users WHERE id = ?')
+    .get(req.session.userId) as UserRow | undefined;
+
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  res.json({ encryptionSalt: user.encryption_salt ?? '' });
 });
 
 // POST /auth/logout

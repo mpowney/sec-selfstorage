@@ -104,6 +104,7 @@ export default function App() {
       userId={userId ?? ''}
       credentialId={credentialId ?? ''}
       clientKey={clientKey}
+      onClientKeyChange={(key) => setClientKey(key)}
       onLogout={() => {
         setAuthenticated(false);
         setUsername(undefined);

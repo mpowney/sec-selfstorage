@@ -52,6 +52,47 @@ export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey
 }
 
 /**
+ * Derive a non-extractable AES-256-GCM key from a user-supplied passphrase and a
+ * hex-encoded 32-byte server-stored salt using PBKDF2-HMAC-SHA256.
+ *
+ * This is used as a fallback when the WebAuthn PRF extension is unavailable (e.g.
+ * iOS Safari with NFC security keys).  The salt ensures that a brute-force attack
+ * on one user's passphrase does not help against any other user.
+ *
+ * Iteration count: 600 000 — matches the OWASP 2023 recommendation for
+ * PBKDF2-HMAC-SHA256.
+ */
+export async function deriveKeyFromPassphrase(passphrase: string, saltHex: string): Promise<CryptoKey> {
+  console.debug('[E2E debug] deriveKeyFromPassphrase: deriving AES-256-GCM key from passphrase');
+  if (!/^[0-9a-f]{64}$/i.test(saltHex)) {
+    throw new Error('Invalid encryption salt format — please sign out and sign back in.');
+  }
+  const enc = new TextEncoder();
+  const saltBytes = new Uint8Array(saltHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(passphrase),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey'],
+  );
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt: saltBytes,
+      iterations: 600_000,
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+  console.debug('[E2E debug] deriveKeyFromPassphrase: key derived successfully');
+  return key;
+}
+
+/**
  * Encrypt plaintext with the client key.
  * Output format: [4-byte magic] [12-byte IV] [AES-GCM ciphertext + 16-byte auth tag]
  */

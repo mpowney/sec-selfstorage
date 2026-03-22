@@ -29,6 +29,9 @@ export interface RegistrationStartResponse {
 export interface AuthenticationStartResponse {
   options: PublicKeyCredentialRequestOptionsJSON;
   challengeId: string;
+  /** Hex-encoded 32-byte random PBKDF2 salt for passphrase-based key derivation.
+   *  Empty string for accounts created before this feature was added. */
+  encryptionSalt: string;
 }
 
 export interface FileRecord {
@@ -68,6 +71,13 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   const res = await fetch('/api/auth/status', { credentials: 'include' });
   if (!res.ok) throw new Error('Failed to get auth status');
   return res.json() as Promise<AuthStatus>;
+}
+
+export async function getEncryptionSalt(): Promise<string> {
+  const res = await fetch('/api/auth/encryption-salt', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to get encryption salt');
+  const data = await res.json() as { encryptionSalt: string };
+  return data.encryptionSalt;
 }
 
 export async function startRegistration(username: string): Promise<RegistrationStartResponse> {

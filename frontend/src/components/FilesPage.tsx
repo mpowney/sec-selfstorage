@@ -21,6 +21,7 @@ import {
   Tooltip,
   Input,
   Label,
+  Field,
   Popover,
   PopoverTrigger,
   PopoverSurface,
@@ -47,15 +48,17 @@ import {
   CodeRegular,
   ArchiveRegular,
   EyeRegular,
+  EyeOffRegular,
   HomeRegular,
   ChevronRightRegular,
   LockClosedRegular,
   PersonRegular,
   MoreHorizontalRegular,
 } from '@fluentui/react-icons';
-import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout } from '../api';
+import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, getEncryptionSalt } from '../api';
 import type { FileRecord } from '../api';
 import { formatFileSize, formatDate } from '../utils';
+import { deriveKeyFromPassphrase } from '../webauthn';
 import UploadArea from './UploadArea';
 
 const useStyles = makeStyles({
@@ -248,6 +251,11 @@ const useStyles = makeStyles({
     borderRadius: tokens.borderRadiusMedium,
     overflow: 'hidden',
   },
+  e2ePanel: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+  },
 });
 
 interface UploadItem {
@@ -270,6 +278,7 @@ interface FilesPageProps {
   credentialId: string;
   clientKey: CryptoKey | null;
   onLogout: () => void;
+  onClientKeyChange: (key: CryptoKey) => void;
 }
 
 function getFileTypeIcon(mimeType: string): React.ReactElement {
@@ -304,7 +313,7 @@ function isViewable(mimeType: string): boolean {
   return mimeType.startsWith('image/') || mimeType === 'application/pdf';
 }
 
-export default function FilesPage({ username, credentialId, clientKey, onLogout }: FilesPageProps) {
+export default function FilesPage({ username, credentialId, clientKey, onLogout, onClientKeyChange }: FilesPageProps) {
   const styles = useStyles();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
@@ -320,6 +329,12 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const previewUrlRef = useRef<string | null>(null);
+
+  // E2E passphrase panel (shown in profile popover when clientKey is null)
+  const [e2ePassphrase, setE2ePassphrase] = useState('');
+  const [showE2ePassphrase, setShowE2ePassphrase] = useState(false);
+  const [e2eLoading, setE2eLoading] = useState(false);
+  const [e2eError, setE2eError] = useState('');
 
   const loadFiles = useCallback(async (folder: string) => {
     setFilesLoading(true);
@@ -351,6 +366,27 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   async function handleLogout() {
     await logout();
     onLogout();
+  }
+
+  async function handleEnableE2E() {
+    if (!e2ePassphrase) return;
+    setE2eError('');
+    setE2eLoading(true);
+    try {
+      const salt = await getEncryptionSalt();
+      if (!salt) {
+        setE2eError('No encryption salt found. Please sign out and sign back in.');
+        setE2eLoading(false);
+        return;
+      }
+      const key = await deriveKeyFromPassphrase(e2ePassphrase, salt);
+      onClientKeyChange(key);
+      setE2ePassphrase('');
+    } catch (err) {
+      setE2eError(err instanceof Error ? err.message : 'Failed to enable E2E encryption');
+    } finally {
+      setE2eLoading(false);
+    }
   }
 
   function handleFilesSelected(selected: File[]) {
@@ -497,9 +533,52 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                     E2E Encrypted
                   </Badge>
                 ) : (
-                  <Badge appearance="tint" color="subtle">
-                    Session encryption only
-                  </Badge>
+                  <>
+                    <Badge appearance="tint" color="subtle">
+                      Session encryption only
+                    </Badge>
+                    {/* Passphrase panel: lets already-authenticated users enable E2E
+                        without signing out, e.g. after a page refresh or on a platform
+                        where WebAuthn PRF is unavailable (iOS with NFC security keys). */}
+                    <div className={styles.e2ePanel}>
+                      <Text size={200} style={{ color: 'var(--colorNeutralForeground3)' }}>
+                        Enter your encryption passphrase to enable end-to-end encryption:
+                      </Text>
+                      <Field>
+                        <Input
+                          type={showE2ePassphrase ? 'text' : 'password'}
+                          value={e2ePassphrase}
+                          onChange={(_, d) => setE2ePassphrase(d.value)}
+                          placeholder="Encryption passphrase"
+                          disabled={e2eLoading}
+                          size="small"
+                          contentAfter={
+                            <Button
+                              appearance="transparent"
+                              size="small"
+                              icon={showE2ePassphrase ? <EyeOffRegular /> : <EyeRegular />}
+                              onClick={() => setShowE2ePassphrase((v) => !v)}
+                              aria-label={showE2ePassphrase ? 'Hide passphrase' : 'Show passphrase'}
+                            />
+                          }
+                        />
+                      </Field>
+                      {e2eError && (
+                        <Text size={200} style={{ color: 'var(--colorStatusDangerForeground1)' }}>
+                          {e2eError}
+                        </Text>
+                      )}
+                      <Button
+                        appearance="primary"
+                        size="small"
+                        icon={e2eLoading ? <Spinner size="tiny" /> : <LockClosedRegular />}
+                        disabled={e2eLoading || !e2ePassphrase}
+                        onClick={() => void handleEnableE2E()}
+                      >
+                        Enable E2E encryption
+                      </Button>
+                    </div>
+                  </>
                 )}
                 <Divider />
                 <Button
