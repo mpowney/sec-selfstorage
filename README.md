@@ -148,7 +148,9 @@ docker compose up -d
 Example Caddy config:
 ```
 storage.myhome.local {
-    reverse_proxy localhost:4000
+    reverse_proxy localhost:4000 {
+        header_up Host {host}
+    }
 }
 ```
 

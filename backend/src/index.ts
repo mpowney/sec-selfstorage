@@ -12,6 +12,14 @@ import filesRouter from './files.js';
 const app = express();
 const PORT = parseInt(process.env['PORT'] ?? '4000', 10);
 
+// Trust the reverse proxy (Caddy, nginx, etc.) so that req.protocol reflects
+// X-Forwarded-Proto and secure session cookies are set correctly.
+if (process.env['TRUST_PROXY']) {
+  app.set('trust proxy', process.env['TRUST_PROXY']);
+} else if (process.env['NODE_ENV'] === 'production') {
+  app.set('trust proxy', 1);
+}
+
 // Initialize database
 getDb();
 
