@@ -161,6 +161,11 @@ export async function browserRegister(
       ...p,
       type: p.type as PublicKeyCredentialType,
     })),
+    // Request PRF at registration so the authenticator initialises the hmac-secret
+    // extension for this credential. Without this, PRF will always return null at
+    // authentication time for CTAP2 security keys (YubiKeys, etc.).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    extensions: { ...options.extensions, prf: {} } as any,
   };
 
   const credential = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential;
