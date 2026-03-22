@@ -3,11 +3,9 @@ import {
   makeStyles,
   tokens,
   Card,
-  CardHeader,
   Input,
   Button,
   Title1,
-  Title2,
   Text,
   MessageBar,
   MessageBarBody,
@@ -15,10 +13,11 @@ import {
   TabList,
   Field,
   Spinner,
+  Link,
 } from '@fluentui/react-components';
-import { LockClosedRegular, KeyRegular } from '@fluentui/react-icons';
+import { LockClosedRegular, KeyRegular, EyeRegular, EyeOffRegular } from '@fluentui/react-icons';
 import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
-import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
+import { browserAuthenticate, browserRegister, deriveClientKey, deriveKeyFromPassphrase } from '../webauthn';
 
 const useStyles = makeStyles({
   root: {
@@ -64,6 +63,11 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     fontSize: tokens.fontSizeBase200,
   },
+  passphraseToggle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+  },
 });
 
 interface LoginPageProps {
@@ -78,6 +82,9 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   // Sign-in state
   const [signInUsername, setSignInUsername] = useState('');
+  const [signInPassphrase, setSignInPassphrase] = useState('');
+  const [showPassphrase, setShowPassphrase] = useState(false);
+  const [showPassphraseField, setShowPassphraseField] = useState(false);
   const [signInLoading, setSignInLoading] = useState(false);
   const [signInStatus, setSignInStatus] = useState('');
   const [signInError, setSignInError] = useState('');
@@ -97,15 +104,63 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setSignInStatus('');
     setSignInLoading(true);
     try {
+      console.debug('[E2E debug] handleSignIn: environment', {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        webAuthnSupported: typeof window.PublicKeyCredential !== 'undefined',
+        conditionalMediationAvailable: typeof window.PublicKeyCredential !== 'undefined'
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ? typeof (window.PublicKeyCredential as any).isConditionalMediationAvailable === 'function'
+          : null,
+        secureContext: window.isSecureContext,
+        protocol: window.location.protocol,
+        hostname: window.location.hostname,
+      });
       setSignInStatus('Starting authentication...');
-      const { options, challengeId } = await startLogin(signInUsername.trim());
-      setSignInStatus('Touch your YubiKey...');
+      const { options, challengeId, encryptionSalt } = await startLogin(signInUsername.trim());
+      console.debug('[E2E debug] handleSignIn: login/start options received', {
+        rpId: options.rpId,
+        timeout: options.timeout,
+        userVerification: options.userVerification,
+        allowCredentialsCount: options.allowCredentials?.length ?? 0,
+        allowCredentialTransports: options.allowCredentials?.map((c: { id: string; type: string; transports?: string[] }) => c.transports),
+        hasEncryptionSalt: !!encryptionSalt,
+      });
+      setSignInStatus('Authenticate with your passkey or security key...');
       const { response: credential, prfOutput } = await browserAuthenticate(options);
+      console.debug('[E2E debug] handleSignIn: authentication complete', {
+        prfOutputReceived: prfOutput !== null,
+        prfOutputByteLength: prfOutput !== null ? prfOutput.byteLength : null,
+      });
       setSignInStatus('Verifying...');
-      const result = await finishLogin(credential, challengeId, !!prfOutput);
-      const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
+
+      // Derive the client E2E key.  PRF takes priority (it's hardware-bound and
+      // requires no passphrase to remember).  If PRF is unavailable (which happens
+      // on iOS Safari with NFC security keys) and the user supplied a passphrase,
+      // fall back to PBKDF2.
+      let clientKey: CryptoKey | null = null;
+      if (prfOutput) {
+        clientKey = await deriveClientKey(prfOutput);
+        console.debug('[E2E debug] handleSignIn: E2E key derived from PRF output');
+      } else if (signInPassphrase && encryptionSalt) {
+        clientKey = await deriveKeyFromPassphrase(signInPassphrase, encryptionSalt);
+        console.debug('[E2E debug] handleSignIn: E2E key derived from passphrase (PRF unavailable)');
+      } else {
+        console.debug('[E2E debug] handleSignIn: no PRF output and no passphrase — session-only encryption');
+      }
+
+      const result = await finishLogin(credential, challengeId, !!clientKey);
+      console.debug('[E2E debug] handleSignIn: login complete', {
+        userId: result.userId,
+        e2eEncryptionActive: clientKey !== null,
+      });
       onLogin(result.userId, result.username, result.credentialId, clientKey);
     } catch (err) {
+      console.debug('[E2E debug] handleSignIn: error', {
+        name: err instanceof Error ? err.name : typeof err,
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       setSignInError(err instanceof Error ? err.message : 'Sign in failed');
       setSignInStatus('');
     } finally {
@@ -123,7 +178,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     try {
       setRegStatus('Starting registration...');
       const { options, challengeId } = await startRegistration(regUsername.trim());
-      setRegStatus('Touch your YubiKey to register...');
+      setRegStatus('Authenticate with your passkey or security key to register...');
       const credential = await browserRegister(options);
       setRegStatus('Finishing registration...');
       await finishRegistration(credential, challengeId, regUsername.trim(), regDisplayName.trim() || regUsername.trim());
@@ -172,6 +227,43 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               />
             </Field>
 
+            {/* Passphrase field for E2E encryption on platforms where PRF is unavailable */}
+            {showPassphraseField ? (
+              <Field
+                label="Encryption passphrase"
+                hint="Must be the same passphrase you used last time. Leave blank to skip E2E encryption."
+              >
+                <Input
+                  type={showPassphrase ? 'text' : 'password'}
+                  value={signInPassphrase}
+                  onChange={(_, d) => setSignInPassphrase(d.value)}
+                  placeholder="Your encryption passphrase"
+                  disabled={signInLoading}
+                  autoComplete="off"
+                  contentAfter={
+                    <Button
+                      appearance="transparent"
+                      icon={showPassphrase ? <EyeOffRegular /> : <EyeRegular />}
+                      onClick={() => setShowPassphrase((v) => !v)}
+                      aria-label={showPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+                    />
+                  }
+                />
+              </Field>
+            ) : (
+              <div className={styles.passphraseToggle}>
+                <Text size={200} style={{ color: 'var(--colorNeutralForeground3)' }}>
+                  E2E encryption not working?{' '}
+                </Text>
+                <Link
+                  onClick={() => setShowPassphraseField(true)}
+                  style={{ fontSize: tokens.fontSizeBase200 }}
+                >
+                  Use a passphrase instead
+                </Link>
+              </div>
+            )}
+
             {signInError && (
               <MessageBar intent="error">
                 <MessageBarBody>{signInError}</MessageBarBody>
@@ -192,7 +284,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={signInLoading || !signInUsername.trim()}
               className={styles.submitButton}
             >
-              {signInLoading ? 'Authenticating...' : 'Sign in with YubiKey'}
+              {signInLoading ? 'Authenticating...' : 'Sign in with passkey or security key'}
             </Button>
           </form>
         )}
@@ -202,7 +294,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             {regSuccess && (
               <MessageBar intent="success">
                 <MessageBarBody>
-                  YubiKey registered successfully! Switch to the Sign In tab to log in.
+                  Passkey or security key registered successfully! Switch to the Sign In tab to log in.
                 </MessageBarBody>
               </MessageBar>
             )}
@@ -248,11 +340,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={regLoading || !regUsername.trim()}
               className={styles.submitButton}
             >
-              {regLoading ? 'Registering...' : 'Register YubiKey'}
+              {regLoading ? 'Registering...' : 'Register passkey or security key'}
             </Button>
 
             <Text size={200} style={{ color: 'var(--colorNeutralForeground3)' }}>
-              Insert your YubiKey before clicking Register.
+              Use a passkey (Face ID, Touch ID) or insert a security key before clicking Register.
             </Text>
           </form>
         )}
@@ -260,3 +352,4 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     </div>
   );
 }
+
