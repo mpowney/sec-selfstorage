@@ -54,16 +54,21 @@ export function getDb(): Database.Database {
       auth_tag TEXT NOT NULL,
       uploaded_at TEXT NOT NULL,
       folder_path TEXT NOT NULL DEFAULT '',
+      client_encrypted INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
   `);
 
+  const tableInfo = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
+
   // Migration: add folder_path column to existing databases
-  const hasFolder = (db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>).some(
-    (col) => col.name === 'folder_path',
-  );
-  if (!hasFolder) {
+  if (!tableInfo.some((col) => col.name === 'folder_path')) {
     db.exec("ALTER TABLE files ADD COLUMN folder_path TEXT NOT NULL DEFAULT ''");
+  }
+
+  // Migration: add client_encrypted column to existing databases
+  if (!tableInfo.some((col) => col.name === 'client_encrypted')) {
+    db.exec('ALTER TABLE files ADD COLUMN client_encrypted INTEGER NOT NULL DEFAULT 0');
   }
 
   return db;

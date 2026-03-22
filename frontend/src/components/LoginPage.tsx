@@ -18,7 +18,7 @@ import {
 } from '@fluentui/react-components';
 import { LockClosedRegular, KeyRegular } from '@fluentui/react-icons';
 import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
-import { browserAuthenticate, browserRegister } from '../webauthn';
+import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
 
 const useStyles = makeStyles({
   root: {
@@ -67,7 +67,7 @@ const useStyles = makeStyles({
 });
 
 interface LoginPageProps {
-  onLogin: (userId: string, username: string, credentialId: string) => void;
+  onLogin: (userId: string, username: string, credentialId: string, clientKey: CryptoKey | null) => void;
 }
 
 type TabValue = 'signin' | 'register';
@@ -100,10 +100,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       setSignInStatus('Starting authentication...');
       const { options, challengeId } = await startLogin(signInUsername.trim());
       setSignInStatus('Touch your YubiKey...');
-      const credential = await browserAuthenticate(options);
+      const { response: credential, prfOutput } = await browserAuthenticate(options);
       setSignInStatus('Verifying...');
       const result = await finishLogin(credential, challengeId);
-      onLogin(result.userId, result.username, result.credentialId);
+      const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
+      onLogin(result.userId, result.username, result.credentialId, clientKey);
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : 'Sign in failed');
       setSignInStatus('');

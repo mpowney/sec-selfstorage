@@ -4,6 +4,7 @@ import type {
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
 } from './webauthn';
+import { clientEncryptFile, clientDecryptFile } from './webauthn';
 
 export type {
   RegistrationResponseJSON,
@@ -39,6 +40,7 @@ export interface FileRecord {
   size: number;
   uploadedAt: string;
   folderPath: string;
+  clientEncrypted: boolean;
 }
 
 // CSRF token cache — fetched once per page load
@@ -135,14 +137,31 @@ export async function uploadFile(
   file: File,
   credentialId: string,
   folderPath: string,
+  clientKey: CryptoKey | null,
   onProgress?: (pct: number) => void,
 ): Promise<FileRecord> {
   const csrfToken = await getCsrfToken();
+
+  // Client-side encryption (inner layer): encrypt before sending to server
+  let filePayload: Blob;
+  if (clientKey) {
+    const encrypted = await clientEncryptFile(await file.arrayBuffer(), clientKey);
+    filePayload = new Blob([encrypted], { type: 'application/octet-stream' });
+  } else {
+    filePayload = file;
+  }
+
   return new Promise((resolve, reject) => {
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', filePayload, file.name);
     formData.append('credentialId', credentialId);
     formData.append('folderPath', folderPath);
+    // When client-encrypted, pass the original MIME type and size so the server
+    // stores them correctly (the uploaded blob is ciphertext, not the raw file)
+    if (clientKey) {
+      formData.append('mimeType', file.type);
+      formData.append('originalSize', String(file.size));
+    }
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/files/upload');
     xhr.withCredentials = true;
@@ -168,10 +187,12 @@ export async function uploadFile(
   });
 }
 
-export async function downloadFile(fileId: string, filename: string): Promise<void> {
+export async function downloadFile(fileId: string, filename: string, mimeType: string, clientKey: CryptoKey | null): Promise<void> {
   const res = await fetch(`/api/files/${fileId}/download`, { credentials: 'include' });
   if (!res.ok) throw new Error('Download failed');
-  const blob = await res.blob();
+  const data = await res.arrayBuffer();
+  const decrypted = await clientDecryptFile(data, clientKey);
+  const blob = new Blob([decrypted], { type: mimeType || 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -182,11 +203,13 @@ export async function downloadFile(fileId: string, filename: string): Promise<vo
   URL.revokeObjectURL(url);
 }
 
-export async function previewFile(fileId: string): Promise<{ url: string; mimeType: string }> {
+export async function previewFile(fileId: string, mimeType: string, clientKey: CryptoKey | null): Promise<{ url: string; mimeType: string }> {
   const res = await fetch(`/api/files/${fileId}/download`, { credentials: 'include' });
   if (!res.ok) throw new Error('Preview failed');
-  const blob = await res.blob();
-  return { url: URL.createObjectURL(blob), mimeType: blob.type };
+  const data = await res.arrayBuffer();
+  const decrypted = await clientDecryptFile(data, clientKey);
+  const blob = new Blob([decrypted], { type: mimeType || 'application/octet-stream' });
+  return { url: URL.createObjectURL(blob), mimeType };
 }
 
 export async function deleteFile(fileId: string): Promise<void> {

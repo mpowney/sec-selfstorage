@@ -1,3 +1,72 @@
+// PRF salt — a fixed application-specific constant; all clients must use the same value
+// so that the YubiKey produces the same PRF output on every authentication
+const PRF_SALT: ArrayBuffer = new TextEncoder().encode('sec-selfstorage-client-encryption-v1').buffer as ArrayBuffer;
+
+// PRF extension result types (not yet in standard WebAuthn TypeScript definitions)
+interface PRFExtensionResult {
+  results?: { first?: ArrayBuffer };
+}
+interface ExtensionResultsWithPRF extends AuthenticationExtensionsClientOutputs {
+  prf?: PRFExtensionResult;
+}
+
+// Magic marker prefix written at the start of every client-encrypted blob: bytes for "SCE1"
+const CLIENT_ENC_MAGIC = new Uint8Array([0x53, 0x43, 0x45, 0x31]);
+const MAGIC_LEN = 4;
+const IV_LEN = 12;
+
+/**
+ * Derive a non-extractable AES-256-GCM key from the raw PRF output using HKDF.
+ */
+export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey> {
+  const baseKey = await crypto.subtle.importKey('raw', prfOutput, { name: 'HKDF' }, false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new Uint8Array(0),
+      info: new TextEncoder().encode('sec-selfstorage-aes-key-v1'),
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/**
+ * Encrypt plaintext with the client key.
+ * Output format: [4-byte magic] [12-byte IV] [AES-GCM ciphertext + 16-byte auth tag]
+ */
+export async function clientEncryptFile(plaintext: ArrayBuffer, key: CryptoKey): Promise<ArrayBuffer> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
+  const out = new Uint8Array(MAGIC_LEN + IV_LEN + ciphertext.byteLength);
+  out.set(CLIENT_ENC_MAGIC, 0);
+  out.set(iv, MAGIC_LEN);
+  out.set(new Uint8Array(ciphertext), MAGIC_LEN + IV_LEN);
+  return out.buffer;
+}
+
+/**
+ * Decrypt a blob produced by clientEncryptFile.
+ * - If the magic marker is absent the data was not client-encrypted; it is returned as-is.
+ * - If the marker is present but no key is provided, throws an actionable error.
+ */
+export async function clientDecryptFile(data: ArrayBuffer, key: CryptoKey | null): Promise<ArrayBuffer> {
+  const bytes = new Uint8Array(data);
+  const isClientEncrypted =
+    bytes.length >= MAGIC_LEN + IV_LEN && CLIENT_ENC_MAGIC.every((b, i) => bytes[i] === b);
+  if (!isClientEncrypted) return data;
+  if (!key)
+    throw new Error(
+      'This file is end-to-end encrypted. Sign out and sign in again to unlock it.',
+    );
+  const iv = bytes.slice(MAGIC_LEN, MAGIC_LEN + IV_LEN);
+  const ciphertext = bytes.slice(MAGIC_LEN + IV_LEN);
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+}
+
 // Helper to convert base64url to ArrayBuffer
 export function base64urlToArrayBuffer(base64url: string): ArrayBuffer {
   const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
@@ -66,6 +135,13 @@ export type AuthenticationResponseJSON = {
   clientExtensionResults: AuthenticationExtensionsClientOutputs;
 };
 
+/** Return value of browserAuthenticate — includes the assertion and any PRF output. */
+export type AuthenticationResult = {
+  response: AuthenticationResponseJSON;
+  /** 32-byte PRF output from the authenticator, or null if PRF is unsupported. */
+  prfOutput: ArrayBuffer | null;
+};
+
 export async function browserRegister(
   options: PublicKeyCredentialCreationOptionsJSON,
 ): Promise<RegistrationResponseJSON> {
@@ -108,7 +184,7 @@ export async function browserRegister(
 
 export async function browserAuthenticate(
   options: PublicKeyCredentialRequestOptionsJSON,
-): Promise<AuthenticationResponseJSON> {
+): Promise<AuthenticationResult> {
   const publicKey: PublicKeyCredentialRequestOptions = {
     ...options,
     challenge: base64urlToArrayBuffer(options.challenge),
@@ -117,23 +193,34 @@ export async function browserAuthenticate(
       type: c.type as PublicKeyCredentialType,
       transports: c.transports as AuthenticatorTransport[] | undefined,
     })),
+    extensions: {
+      ...options.extensions,
+      // Request the PRF extension so the YubiKey produces a deterministic key-derivation secret.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      prf: { eval: { first: PRF_SALT } } as any,
+    },
   };
 
   const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential;
   if (!credential) throw new Error('No credential returned');
 
   const response = credential.response as AuthenticatorAssertionResponse;
+  const extensions = credential.getClientExtensionResults() as ExtensionResultsWithPRF;
+  const prfOutput = extensions.prf?.results?.first ?? null;
 
   return {
-    id: credential.id,
-    rawId: arrayBufferToBase64url(credential.rawId),
     response: {
-      clientDataJSON: arrayBufferToBase64url(response.clientDataJSON),
-      authenticatorData: arrayBufferToBase64url(response.authenticatorData),
-      signature: arrayBufferToBase64url(response.signature),
-      userHandle: response.userHandle ? arrayBufferToBase64url(response.userHandle) : undefined,
+      id: credential.id,
+      rawId: arrayBufferToBase64url(credential.rawId),
+      response: {
+        clientDataJSON: arrayBufferToBase64url(response.clientDataJSON),
+        authenticatorData: arrayBufferToBase64url(response.authenticatorData),
+        signature: arrayBufferToBase64url(response.signature),
+        userHandle: response.userHandle ? arrayBufferToBase64url(response.userHandle) : undefined,
+      },
+      type: credential.type,
+      clientExtensionResults: credential.getClientExtensionResults(),
     },
-    type: credential.type,
-    clientExtensionResults: credential.getClientExtensionResults(),
+    prfOutput,
   };
 }

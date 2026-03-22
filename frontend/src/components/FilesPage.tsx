@@ -39,6 +39,7 @@ import {
   EyeRegular,
   HomeRegular,
   ChevronRightRegular,
+  LockClosedRegular,
 } from '@fluentui/react-icons';
 import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout } from '../api';
 import type { FileRecord } from '../api';
@@ -209,6 +210,7 @@ interface FilesPageProps {
   username: string;
   userId: string;
   credentialId: string;
+  clientKey: CryptoKey | null;
   onLogout: () => void;
 }
 
@@ -244,7 +246,7 @@ function isViewable(mimeType: string): boolean {
   return mimeType.startsWith('image/') || mimeType === 'application/pdf';
 }
 
-export default function FilesPage({ username, credentialId, onLogout }: FilesPageProps) {
+export default function FilesPage({ username, credentialId, clientKey, onLogout }: FilesPageProps) {
   const styles = useStyles();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
@@ -311,7 +313,7 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
       prev.map((i) => (i.id === item.id ? { ...i, status: 'uploading' } : i)),
     );
     try {
-      const result = await uploadFile(item.file, credentialId, currentFolder, (pct) => {
+      const result = await uploadFile(item.file, credentialId, currentFolder, clientKey, (pct) => {
         setUploadQueue((prev) =>
           prev.map((i) => (i.id === item.id ? { ...i, progress: pct } : i)),
         );
@@ -339,7 +341,7 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
   async function handleDownload(file: FileRecord) {
     setActionError('');
     try {
-      await downloadFile(file.id, file.filename);
+      await downloadFile(file.id, file.filename, file.mimeType, clientKey);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Download failed');
     }
@@ -349,7 +351,7 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
     setActionError('');
     setPreviewLoadingId(file.id);
     try {
-      const { url, mimeType } = await previewFile(file.id);
+      const { url, mimeType } = await previewFile(file.id, file.mimeType, clientKey);
       if (previewUrlRef.current) {
         URL.revokeObjectURL(previewUrlRef.current);
       }
@@ -422,6 +424,15 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
           <Text size={300} style={{ color: 'var(--colorNeutralForeground2)' }}>
             Signed in as <strong>{username}</strong>
           </Text>
+          {clientKey ? (
+            <Badge appearance="tint" color="success" icon={<LockClosedRegular />}>
+              E2E Encrypted
+            </Badge>
+          ) : (
+            <Badge appearance="tint" color="subtle">
+              Session encryption only
+            </Badge>
+          )}
           <Button
             appearance="subtle"
             icon={<SignOutRegular />}
@@ -568,6 +579,7 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
                   <th className={styles.th}>Size</th>
                   <th className={styles.th}>Type</th>
                   <th className={styles.th}>Uploaded</th>
+                  <th className={styles.th}>Encryption</th>
                   <th className={styles.th}>Actions</th>
                 </tr>
               </thead>
@@ -600,6 +612,7 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
                         </Badge>
                       </td>
                       <td className={styles.td}>—</td>
+                      <td className={styles.td} />
                       <td className={styles.tdActions} />
                     </tr>
                   );
@@ -630,6 +643,24 @@ export default function FilesPage({ username, credentialId, onLogout }: FilesPag
                       </Badge>
                     </td>
                     <td className={styles.td}>{formatDate(file.uploadedAt)}</td>
+                    <td className={styles.td}>
+                      <Tooltip
+                        content={
+                          file.clientEncrypted
+                            ? 'End-to-end encrypted (YubiKey + server)'
+                            : 'Server-side encrypted only'
+                        }
+                        relationship="label"
+                      >
+                        <Badge
+                          appearance="tint"
+                          color={file.clientEncrypted ? 'success' : 'subtle'}
+                          icon={file.clientEncrypted ? <LockClosedRegular /> : undefined}
+                        >
+                          {file.clientEncrypted ? 'E2E' : 'Server'}
+                        </Badge>
+                      </Tooltip>
+                    </td>
                     <td className={styles.tdActions}>
                       {isViewable(file.mimeType) && (
                         <Tooltip content="Preview" relationship="label">

@@ -36,11 +36,12 @@ router.get('/', (req: Request, res: Response) => {
       auth_tag: string;
       uploaded_at: string;
       folder_path: string;
+      client_encrypted: number;
     };
 
     const rows = db
       .prepare(
-        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path
+        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path, client_encrypted
          FROM files WHERE user_id = ? AND folder_path = ? ORDER BY uploaded_at DESC`,
       )
       .all(req.session.userId, folder) as FileRow[];
@@ -56,6 +57,7 @@ router.get('/', (req: Request, res: Response) => {
       authTag: r.auth_tag,
       uploadedAt: r.uploaded_at,
       folderPath: r.folder_path,
+      clientEncrypted: r.client_encrypted === 1,
     }));
 
     // Derive immediate subfolders under the current folder
@@ -94,13 +96,29 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       return;
     }
 
-    const { credentialId, folderPath } = req.body as { credentialId?: string; folderPath?: string };
+    const { credentialId, folderPath, mimeType: bodyMimeType, originalSize: bodyOriginalSize } = req.body as {
+      credentialId?: string;
+      folderPath?: string;
+      // These fields are sent by the client when it has pre-encrypted the file (layered E2E),
+      // so the uploaded blob is ciphertext rather than the raw file.
+      mimeType?: string;
+      originalSize?: string;
+    };
     if (!credentialId) {
       res.status(400).json({ error: 'credentialId is required' });
       return;
     }
 
     const resolvedFolderPath = typeof folderPath === 'string' ? folderPath.trim() : '';
+
+    // When the client encrypts before uploading it passes the original MIME type and file size
+    // as separate form fields (the blob itself is opaque ciphertext).
+    const effectiveMimeType =
+      typeof bodyMimeType === 'string' && bodyMimeType ? bodyMimeType : req.file.mimetype;
+    const effectiveSize =
+      typeof bodyOriginalSize === 'string' && bodyOriginalSize
+        ? parseInt(bodyOriginalSize, 10) || req.file.size
+        : req.file.size;
 
     const db = getDb();
 
@@ -114,25 +132,29 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       return;
     }
 
+    // A client-encrypted upload sends mimeType as a separate body field
+    const isClientEncrypted = typeof bodyMimeType === 'string' && bodyMimeType.length > 0;
+
     const fileId = uuidv4();
     const { encrypted, iv, authTag } = encryptFile(req.file.buffer, fileId, credentialId);
 
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO files (id, user_id, credential_id, filename, mime_type, size, encrypted_data, iv, auth_tag, uploaded_at, folder_path)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO files (id, user_id, credential_id, filename, mime_type, size, encrypted_data, iv, auth_tag, uploaded_at, folder_path, client_encrypted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       fileId,
       req.session.userId,
       credentialId,
       req.file.originalname,
-      req.file.mimetype,
-      req.file.size,
+      effectiveMimeType,
+      effectiveSize,
       encrypted,
       iv,
       authTag,
       now,
       resolvedFolderPath,
+      isClientEncrypted ? 1 : 0,
     );
 
     const fileRecord: FileRecord = {
@@ -140,12 +162,13 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       userId: req.session.userId as string,
       credentialId,
       filename: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
+      mimeType: effectiveMimeType,
+      size: effectiveSize,
       iv,
       authTag,
       uploadedAt: now,
       folderPath: resolvedFolderPath,
+      clientEncrypted: isClientEncrypted,
     };
 
     res.status(201).json(fileRecord);
@@ -232,11 +255,12 @@ router.get('/:id/info', (req: Request, res: Response) => {
       auth_tag: string;
       uploaded_at: string;
       folder_path: string;
+      client_encrypted: number;
     };
 
     const row = db
       .prepare(
-        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path
+        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path, client_encrypted
          FROM files WHERE id = ? AND user_id = ?`,
       )
       .get(req.params['id'], req.session.userId) as FileRow | undefined;
@@ -257,6 +281,7 @@ router.get('/:id/info', (req: Request, res: Response) => {
       authTag: row.auth_tag,
       uploadedAt: row.uploaded_at,
       folderPath: row.folder_path,
+      clientEncrypted: row.client_encrypted === 1,
     };
 
     res.json(fileRecord);
