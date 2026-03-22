@@ -10,7 +10,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { subscribeToLogs, LogEntry } from '../logger';
+import { subscribeToLogs, getLogHistory, clearLogHistory, LogEntry } from '../logger';
 
 const useStyles = makeStyles({
   textarea: {
@@ -91,6 +91,12 @@ export default function DebugScreen({ open, onClose }: DebugScreenProps) {
   const [copied, setCopied] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Preload history on mount so entries emitted before this component mounted
+  // (e.g. during the login flow, before transitioning to the files page) are visible.
+  useEffect(() => {
+    setLogLines(getLogHistory().map(formatEntry));
+  }, []);
+
   // Subscribe to global log bus for the lifetime of this component.
   useEffect(() => {
     const unsubscribe = subscribeToLogs((entry) => {
@@ -120,6 +126,7 @@ export default function DebugScreen({ open, onClose }: DebugScreenProps) {
   }
 
   function handleClear() {
+    clearLogHistory();
     setLogLines([]);
   }
 

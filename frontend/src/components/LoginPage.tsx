@@ -16,11 +16,10 @@ import {
   Field,
   Spinner,
 } from '@fluentui/react-components';
-import { LockClosedRegular, KeyRegular, SettingsRegular } from '@fluentui/react-icons';
+import { LockClosedRegular, KeyRegular, BugRegular } from '@fluentui/react-icons';
 import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
 import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
 import { Logger } from '../logger';
-import DebugScreen from './DebugScreen';
 
 const logger = new Logger('LoginPage');
 
@@ -77,14 +76,14 @@ const useStyles = makeStyles({
 
 interface LoginPageProps {
   onLogin: (userId: string, username: string, credentialId: string, clientKey: CryptoKey | null) => void;
+  onOpenDebug: () => void;
 }
 
 type TabValue = 'signin' | 'register';
 
-export default function LoginPage({ onLogin }: LoginPageProps) {
+export default function LoginPage({ onLogin, onOpenDebug }: LoginPageProps) {
   const styles = useStyles();
   const [activeTab, setActiveTab] = useState<TabValue>('signin');
-  const [debugOpen, setDebugOpen] = useState(false);
 
   // Sign-in state
   const [signInUsername, setSignInUsername] = useState('');
@@ -347,21 +346,19 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           </form>
         )}
 
-        {/* Discrete debug cog — reduced opacity to keep it unobtrusive */}
+        {/* Discrete debug button — reduced opacity to keep it unobtrusive */}
         <div className={styles.debugButtonRow}>
           <Button
             appearance="subtle"
             size="small"
-            icon={<SettingsRegular />}
-            onClick={() => setDebugOpen(true)}
+            icon={<BugRegular />}
+            onClick={onOpenDebug}
             style={{ opacity: 0.4 }}
             title="Open debug log"
             aria-label="Open debug log"
           />
         </div>
       </Card>
-
-      <DebugScreen open={debugOpen} onClose={() => setDebugOpen(false)} />
     </div>
   );
 }

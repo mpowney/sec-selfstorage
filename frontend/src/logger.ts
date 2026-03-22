@@ -17,11 +17,33 @@ export interface LogEntry {
 type LogSubscriber = (entry: LogEntry) => void;
 
 // ---------------------------------------------------------------------------
+// Historical log buffer — persists for the lifetime of the page so that
+// DebugScreen instances that mount after entries were emitted (e.g. after
+// a login→files page transition) can replay the full history.
+// ---------------------------------------------------------------------------
+const logHistory: LogEntry[] = [];
+
+/**
+ * Return a snapshot of all log entries emitted since the page loaded.
+ */
+export function getLogHistory(): LogEntry[] {
+  return logHistory.slice();
+}
+
+/**
+ * Clear the historical log buffer (called when the user clicks "Clear" in DebugScreen).
+ */
+export function clearLogHistory(): void {
+  logHistory.length = 0;
+}
+
+// ---------------------------------------------------------------------------
 // Global log bus — all Logger instances share this set of subscribers.
 // ---------------------------------------------------------------------------
 const subscribers = new Set<LogSubscriber>();
 
 function emit(entry: LogEntry): void {
+  logHistory.push(entry);
   for (const sub of subscribers) {
     try {
       sub(entry);

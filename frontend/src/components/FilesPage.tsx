@@ -52,6 +52,7 @@ import {
   LockClosedRegular,
   PersonRegular,
   MoreHorizontalRegular,
+  BugRegular,
 } from '@fluentui/react-icons';
 import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout } from '../api';
 import type { FileRecord } from '../api';
@@ -270,6 +271,7 @@ interface FilesPageProps {
   credentialId: string;
   clientKey: CryptoKey | null;
   onLogout: () => void;
+  onOpenDebug: () => void;
 }
 
 function getFileTypeIcon(mimeType: string): React.ReactElement {
@@ -304,7 +306,7 @@ function isViewable(mimeType: string): boolean {
   return mimeType.startsWith('image/') || mimeType === 'application/pdf';
 }
 
-export default function FilesPage({ username, credentialId, clientKey, onLogout }: FilesPageProps) {
+export default function FilesPage({ username, credentialId, clientKey, onLogout, onOpenDebug }: FilesPageProps) {
   const styles = useStyles();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
@@ -502,6 +504,14 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                   </Badge>
                 )}
                 <Divider />
+                <Button
+                  appearance="subtle"
+                  icon={<BugRegular />}
+                  onClick={onOpenDebug}
+                  aria-label="Open debug log"
+                >
+                  Debug Log
+                </Button>
                 <Button
                   appearance="subtle"
                   icon={<SignOutRegular />}
