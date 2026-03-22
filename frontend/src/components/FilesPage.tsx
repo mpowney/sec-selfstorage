@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   makeStyles,
+  mergeClasses,
   tokens,
   Button,
   Text,
@@ -20,6 +21,15 @@ import {
   Tooltip,
   Input,
   Label,
+  Popover,
+  PopoverTrigger,
+  PopoverSurface,
+  Divider,
+  Menu,
+  MenuTrigger,
+  MenuPopover,
+  MenuList,
+  MenuItem,
 } from '@fluentui/react-components';
 import {
   SignOutRegular,
@@ -40,6 +50,8 @@ import {
   HomeRegular,
   ChevronRightRegular,
   LockClosedRegular,
+  PersonRegular,
+  MoreHorizontalRegular,
 } from '@fluentui/react-icons';
 import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout } from '../api';
 import type { FileRecord } from '../api';
@@ -57,6 +69,9 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1,
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
     padding: '12px 24px',
+    '@media (max-width: 640px)': {
+      padding: '8px 12px',
+    },
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -67,9 +82,24 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '12px',
   },
+  headerRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  profilePopoverContent: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    padding: '4px 0',
+    minWidth: '220px',
+  },
   main: {
     flex: 1,
     padding: '24px',
+    '@media (max-width: 640px)': {
+      padding: '12px',
+    },
     maxWidth: '1100px',
     width: '100%',
     margin: '0 auto',
@@ -81,6 +111,9 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1,
     borderRadius: tokens.borderRadiusMedium,
     padding: '20px',
+    '@media (max-width: 640px)': {
+      padding: '12px',
+    },
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
@@ -90,6 +123,9 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1,
     borderRadius: tokens.borderRadiusMedium,
     padding: '20px',
+    '@media (max-width: 640px)': {
+      padding: '12px',
+    },
     display: 'flex',
     flexDirection: 'column',
     gap: '16px',
@@ -147,6 +183,28 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '8px',
     minWidth: '180px',
+    '@media (max-width: 640px)': {
+      minWidth: '0',
+    },
+  },
+  mobileHidden: {
+    '@media (max-width: 640px)': {
+      display: 'none',
+    },
+  },
+  actionsDesktop: {
+    display: 'flex',
+    gap: '4px',
+    '@media (max-width: 640px)': {
+      display: 'none',
+    },
+  },
+  actionsMobile: {
+    display: 'none',
+    '@media (max-width: 640px)': {
+      display: 'flex',
+      justifyContent: 'flex-end',
+    },
   },
   folderRow: {
     cursor: 'pointer',
@@ -420,26 +478,40 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
         <div className={styles.headerLeft}>
           <Title2>SecSelfStorage</Title2>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <Text size={300} style={{ color: 'var(--colorNeutralForeground2)' }}>
-            Signed in as <strong>{username}</strong>
-          </Text>
-          {clientKey ? (
-            <Badge appearance="tint" color="success" icon={<LockClosedRegular />}>
-              E2E Encrypted
-            </Badge>
-          ) : (
-            <Badge appearance="tint" color="subtle">
-              Session encryption only
-            </Badge>
-          )}
-          <Button
-            appearance="subtle"
-            icon={<SignOutRegular />}
-            onClick={() => void handleLogout()}
-          >
-            Sign out
-          </Button>
+        <div className={styles.headerRight}>
+          <Popover positioning="below-end">
+            <PopoverTrigger disableButtonEnhancement>
+              <Button
+                appearance="subtle"
+                icon={<PersonRegular />}
+                aria-label="Profile"
+              />
+            </PopoverTrigger>
+            <PopoverSurface>
+              <div className={styles.profilePopoverContent}>
+                <Text size={300} style={{ color: 'var(--colorNeutralForeground2)' }}>
+                  Signed in as <strong>{username}</strong>
+                </Text>
+                {clientKey ? (
+                  <Badge appearance="tint" color="success" icon={<LockClosedRegular />}>
+                    E2E Encrypted
+                  </Badge>
+                ) : (
+                  <Badge appearance="tint" color="subtle">
+                    Session encryption only
+                  </Badge>
+                )}
+                <Divider />
+                <Button
+                  appearance="subtle"
+                  icon={<SignOutRegular />}
+                  onClick={() => void handleLogout()}
+                >
+                  Sign out
+                </Button>
+              </div>
+            </PopoverSurface>
+          </Popover>
         </div>
       </header>
 
@@ -577,9 +649,9 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                 <tr>
                   <th className={styles.th}>Name</th>
                   <th className={styles.th}>Size</th>
-                  <th className={styles.th}>Type</th>
-                  <th className={styles.th}>Uploaded</th>
-                  <th className={styles.th}>Encryption</th>
+                  <th className={mergeClasses(styles.th, styles.mobileHidden)}>Type</th>
+                  <th className={mergeClasses(styles.th, styles.mobileHidden)}>Uploaded</th>
+                  <th className={mergeClasses(styles.th, styles.mobileHidden)}>Encryption</th>
                   <th className={styles.th}>Actions</th>
                 </tr>
               </thead>
@@ -606,13 +678,13 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                         </div>
                       </td>
                       <td className={styles.td}>—</td>
-                      <td className={styles.td}>
+                      <td className={mergeClasses(styles.td, styles.mobileHidden)}>
                         <Badge appearance="tint" color="subtle">
                           Folder
                         </Badge>
                       </td>
-                      <td className={styles.td}>—</td>
-                      <td className={styles.td} />
+                      <td className={mergeClasses(styles.td, styles.mobileHidden)}>—</td>
+                      <td className={mergeClasses(styles.td, styles.mobileHidden)} />
                       <td className={styles.tdActions} />
                     </tr>
                   );
@@ -637,13 +709,13 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                       </div>
                     </td>
                     <td className={styles.td}>{formatFileSize(file.size)}</td>
-                    <td className={styles.td}>
+                    <td className={mergeClasses(styles.td, styles.mobileHidden)}>
                       <Badge appearance="tint" color="informative">
                         {file.mimeType || 'unknown'}
                       </Badge>
                     </td>
-                    <td className={styles.td}>{formatDate(file.uploadedAt)}</td>
-                    <td className={styles.td}>
+                    <td className={mergeClasses(styles.td, styles.mobileHidden)}>{formatDate(file.uploadedAt)}</td>
+                    <td className={mergeClasses(styles.td, styles.mobileHidden)}>
                       <Tooltip
                         content={
                           file.clientEncrypted
@@ -662,37 +734,79 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                       </Tooltip>
                     </td>
                     <td className={styles.tdActions}>
-                      {isViewable(file.mimeType) && (
-                        <Tooltip content="Preview" relationship="label">
+                      {/* Desktop: inline icon buttons */}
+                      <div className={styles.actionsDesktop}>
+                        {isViewable(file.mimeType) && (
+                          <Tooltip content="Preview" relationship="label">
+                            <Button
+                              appearance="subtle"
+                              size="small"
+                              icon={previewLoadingId === file.id ? <Spinner size="tiny" /> : <EyeRegular />}
+                              onClick={() => void handlePreview(file)}
+                              aria-label={`Preview ${file.filename}`}
+                              disabled={previewLoadingId !== null}
+                            />
+                          </Tooltip>
+                        )}
+                        <Tooltip content="Download" relationship="label">
                           <Button
                             appearance="subtle"
                             size="small"
-                            icon={previewLoadingId === file.id ? <Spinner size="tiny" /> : <EyeRegular />}
-                            onClick={() => void handlePreview(file)}
-                            aria-label={`Preview ${file.filename}`}
-                            disabled={previewLoadingId !== null}
+                            icon={<ArrowDownloadRegular />}
+                            onClick={() => void handleDownload(file)}
+                            aria-label={`Download ${file.filename}`}
                           />
                         </Tooltip>
-                      )}
-                      <Tooltip content="Download" relationship="label">
-                        <Button
-                          appearance="subtle"
-                          size="small"
-                          icon={<ArrowDownloadRegular />}
-                          onClick={() => void handleDownload(file)}
-                          aria-label={`Download ${file.filename}`}
-                        />
-                      </Tooltip>
-                      <Tooltip content="Delete" relationship="label">
-                        <Button
-                          appearance="subtle"
-                          size="small"
-                          icon={<DeleteRegular />}
-                          onClick={() => setDeleteTarget(file)}
-                          aria-label={`Delete ${file.filename}`}
-                          style={{ color: 'var(--colorPaletteRedForeground1)' }}
-                        />
-                      </Tooltip>
+                        <Tooltip content="Delete" relationship="label">
+                          <Button
+                            appearance="subtle"
+                            size="small"
+                            icon={<DeleteRegular />}
+                            onClick={() => setDeleteTarget(file)}
+                            aria-label={`Delete ${file.filename}`}
+                            style={{ color: 'var(--colorPaletteRedForeground1)' }}
+                          />
+                        </Tooltip>
+                      </div>
+                      {/* Mobile: context menu */}
+                      <div className={styles.actionsMobile}>
+                        <Menu>
+                          <MenuTrigger disableButtonEnhancement>
+                            <Button
+                              appearance="subtle"
+                              size="small"
+                              icon={<MoreHorizontalRegular />}
+                              aria-label={`Actions for ${file.filename}`}
+                              disabled={previewLoadingId !== null}
+                            />
+                          </MenuTrigger>
+                          <MenuPopover>
+                            <MenuList>
+                              {isViewable(file.mimeType) && (
+                                <MenuItem
+                                  icon={previewLoadingId === file.id ? <Spinner size="tiny" /> : <EyeRegular />}
+                                  onClick={() => void handlePreview(file)}
+                                >
+                                  Preview
+                                </MenuItem>
+                              )}
+                              <MenuItem
+                                icon={<ArrowDownloadRegular />}
+                                onClick={() => void handleDownload(file)}
+                              >
+                                Download
+                              </MenuItem>
+                              <MenuItem
+                                icon={<DeleteRegular />}
+                                onClick={() => setDeleteTarget(file)}
+                                style={{ color: 'var(--colorPaletteRedForeground1)' }}
+                              >
+                                Delete
+                              </MenuItem>
+                            </MenuList>
+                          </MenuPopover>
+                        </Menu>
+                      </div>
                     </td>
                   </tr>
                 ))}
