@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Button,
   Dialog,
@@ -105,6 +105,13 @@ export default function WebAuthnDebugPanel() {
   const [username, setUsername] = useState('');
   const [testing, setTesting] = useState(false);
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle');
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current !== null) clearTimeout(copyTimeoutRef.current);
+    };
+  }, []);
 
   const appendLog = useCallback((lines: string | string[]) => {
     setLog((prev) => {
@@ -171,9 +178,11 @@ export default function WebAuthnDebugPanel() {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const prfResult = (extResults as any)?.prf;
+      let prfPresent = false;
       if (prfResult !== undefined) {
         appendLog(`   prf.enabled: ${prfResult.enabled ?? '(absent)'}`);
         if (prfResult.results?.first) {
+          prfPresent = true;
           const buf = prfResult.results.first as ArrayBuffer;
           appendLog(
             `   prf.results.first (base64url): ${arrayBufferToBase64url(buf)} (${buf.byteLength} bytes) ✅`,
@@ -186,10 +195,63 @@ export default function WebAuthnDebugPanel() {
       }
 
       const assertionResponse = credential.response as AuthenticatorAssertionResponse;
+      const authDataBytes = new Uint8Array(assertionResponse.authenticatorData);
+      const flagsByte = authDataBytes[32];
+      const upFlag = !!(flagsByte & 0x01);
+      const uvFlag = !!(flagsByte & 0x04);
+      const atFlag = !!(flagsByte & 0x40);
+      const edFlag = !!(flagsByte & 0x80);
+      appendLog(`4. authenticatorData: ${assertionResponse.authenticatorData.byteLength} bytes`);
       appendLog(
-        `4. authenticatorData: ${assertionResponse.authenticatorData.byteLength} bytes`,
+        `   flags byte 0x${flagsByte.toString(16).padStart(2, '0')}: ` +
+          `UP=${upFlag ? 1 : 0} UV=${uvFlag ? 1 : 0} AT=${atFlag ? 1 : 0} ED=${edFlag ? 1 : 0}`,
       );
+      appendLog(
+        `   ED (Extension Data present in authenticatorData): ${edFlag ? 'YES ✅' : 'NO ❌'}`,
+      );
+      if (!edFlag) {
+        appendLog(
+          '   ↳ The authenticator returned no extension outputs. The PRF/hmac-secret',
+        );
+        appendLog(
+          '     extension was either not forwarded to the key, or the credential was',
+        );
+        appendLog('     not enrolled with hmac-secret enabled.');
+      }
+
       appendLog('[DONE] Test complete — check prf results above');
+
+      // Diagnosis section
+      appendLog('');
+      appendLog('=== Diagnosis ===');
+      const firstCred = options.allowCredentials?.[0];
+      const transports: string[] = firstCred?.transports ?? [];
+      const isExternalKey = transports.some((t) => t === 'usb' || t === 'nfc');
+      const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+      if (!prfPresent && !edFlag && isExternalKey) {
+        appendLog('LIKELY CAUSE: iOS Safari (and many mobile browsers) do not forward the');
+        appendLog('PRF/hmac-secret extension to external USB or NFC security keys.');
+        appendLog('PRF is only supported for platform authenticators (Face ID / Touch ID)');
+        appendLog('on iOS. The 37-byte authenticatorData (no ED flag) confirms the key');
+        appendLog('itself received no extension request from the browser.');
+        appendLog('');
+        appendLog('SOLUTIONS:');
+        appendLog('  1. Use the passphrase fallback shown on the sign-in screen.');
+        appendLog('  2. Re-register using Face ID / Touch ID as the platform authenticator.');
+        appendLog('  3. Sign in on a desktop browser (Chrome/Firefox) which supports PRF');
+        appendLog('     for external security keys via CTAP2.1.');
+        if (!isIos) {
+          appendLog('');
+          appendLog('NOTE: This browser does not appear to be iOS Safari. If PRF is still');
+          appendLog('absent, the credential may have been enrolled without hmac-secret');
+          appendLog('(registered before PRF support was added). Re-register the key.');
+        }
+      } else if (prfPresent) {
+        appendLog('PRF extension output received ✅ — E2E encryption should work normally.');
+      } else {
+        appendLog('Could not determine cause automatically. See raw results above.');
+      }
     } catch (e) {
       if (e instanceof Error) {
         appendLog(`[ERROR] ${e.name}: ${e.message}`);
@@ -203,12 +265,13 @@ export default function WebAuthnDebugPanel() {
   }, [username, appendLog]);
 
   const copyLog = useCallback(() => {
+    if (copyTimeoutRef.current !== null) clearTimeout(copyTimeoutRef.current);
     navigator.clipboard.writeText(log).then(() => {
       setCopyStatus('copied');
-      setTimeout(() => setCopyStatus('idle'), 2000);
+      copyTimeoutRef.current = setTimeout(() => setCopyStatus('idle'), 2000);
     }).catch(() => {
       setCopyStatus('error');
-      setTimeout(() => setCopyStatus('idle'), 2000);
+      copyTimeoutRef.current = setTimeout(() => setCopyStatus('idle'), 2000);
     });
   }, [log]);
 

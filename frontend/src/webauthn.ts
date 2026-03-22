@@ -16,6 +16,36 @@ const MAGIC_LEN = 4;
 const IV_LEN = 12;
 
 /**
+ * Derive a non-extractable AES-256-GCM key from a user-supplied passphrase using
+ * PBKDF2-HMAC-SHA256.  The credential ID is mixed into the salt so that the same
+ * passphrase produces a distinct key for each registered credential.
+ *
+ * This is the fallback when the PRF extension is unavailable (e.g. iOS Safari with
+ * an external USB/NFC security key).
+ */
+export async function deriveKeyFromPassphrase(
+  passphrase: string,
+  credentialId: string,
+): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const rawKey = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(passphrase),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey'],
+  );
+  const salt = enc.encode('sec-selfstorage-passphrase-v1:' + credentialId);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 600_000 },
+    rawKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/**
  * Derive a non-extractable AES-256-GCM key from the raw PRF output using HKDF.
  */
 export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey> {

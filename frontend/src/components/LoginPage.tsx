@@ -18,7 +18,7 @@ import {
 } from '@fluentui/react-components';
 import { LockClosedRegular, KeyRegular } from '@fluentui/react-icons';
 import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
-import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
+import { browserAuthenticate, browserRegister, deriveClientKey, deriveKeyFromPassphrase } from '../webauthn';
 import WebAuthnDebugPanel from './WebAuthnDebugPanel';
 
 const useStyles = makeStyles({
@@ -83,6 +83,16 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [signInStatus, setSignInStatus] = useState('');
   const [signInError, setSignInError] = useState('');
 
+  // Passphrase fallback state (shown when PRF is unavailable)
+  const [pendingLogin, setPendingLogin] = useState<{
+    userId: string;
+    username: string;
+    credentialId: string;
+  } | null>(null);
+  const [passphrase, setPassphrase] = useState('');
+  const [passphraseLoading, setPassphraseLoading] = useState(false);
+  const [passphraseError, setPassphraseError] = useState('');
+
   // Register state
   const [regUsername, setRegUsername] = useState('');
   const [regDisplayName, setRegDisplayName] = useState('');
@@ -104,14 +114,42 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       const { response: credential, prfOutput } = await browserAuthenticate(options);
       setSignInStatus('Verifying...');
       const result = await finishLogin(credential, challengeId, !!prfOutput);
-      const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
-      onLogin(result.userId, result.username, result.credentialId, clientKey);
+      if (prfOutput) {
+        const clientKey = await deriveClientKey(prfOutput);
+        onLogin(result.userId, result.username, result.credentialId, clientKey);
+      } else {
+        // PRF unavailable (e.g. iOS Safari + external security key) — ask for passphrase
+        setPendingLogin({ userId: result.userId, username: result.username, credentialId: result.credentialId });
+        setSignInStatus('');
+      }
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : 'Sign in failed');
       setSignInStatus('');
     } finally {
       setSignInLoading(false);
     }
+  }
+
+  async function handlePassphraseSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pendingLogin) return;
+    setPassphraseError('');
+    setPassphraseLoading(true);
+    try {
+      const clientKey = passphrase.trim()
+        ? await deriveKeyFromPassphrase(passphrase, pendingLogin.credentialId)
+        : null;
+      onLogin(pendingLogin.userId, pendingLogin.username, pendingLogin.credentialId, clientKey);
+    } catch (err) {
+      setPassphraseError(err instanceof Error ? err.message : 'Failed to derive encryption key');
+    } finally {
+      setPassphraseLoading(false);
+    }
+  }
+
+  function handleSkipEncryption() {
+    if (!pendingLogin) return;
+    onLogin(pendingLogin.userId, pendingLogin.username, pendingLogin.credentialId, null);
   }
 
   async function handleRegister(e: React.FormEvent) {
@@ -161,41 +199,98 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         </TabList>
 
         {activeTab === 'signin' && (
-          <form onSubmit={handleSignIn} className={styles.form}>
-            <Field label="Username" required>
-              <Input
-                value={signInUsername}
-                onChange={(_, d) => setSignInUsername(d.value)}
-                placeholder="Enter your username"
-                disabled={signInLoading}
-                autoComplete="username"
-                autoCapitalize="none"
-              />
-            </Field>
+          <>
+            {pendingLogin ? (
+              <form onSubmit={handlePassphraseSubmit} className={styles.form}>
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    Your YubiKey authenticated successfully, but this device/browser does not support
+                    the PRF extension for external security keys (a known iOS Safari limitation).
+                    Enter an encryption passphrase to keep end-to-end encryption active, or skip to
+                    sign in without file encryption.
+                  </MessageBarBody>
+                </MessageBar>
 
-            {signInError && (
-              <MessageBar intent="error">
-                <MessageBarBody>{signInError}</MessageBarBody>
-              </MessageBar>
+                <Field
+                  label="Encryption passphrase (optional)"
+                  hint="You must use the same passphrase every time you sign in. Losing it will make your encrypted files permanently unreadable."
+                >
+                  <Input
+                    type="password"
+                    value={passphrase}
+                    onChange={(_, d) => setPassphrase(d.value)}
+                    placeholder="Enter a memorable passphrase"
+                    disabled={passphraseLoading}
+                    autoComplete="current-password"
+                    autoCapitalize="none"
+                  />
+                </Field>
+
+                {passphraseError && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>{passphraseError}</MessageBarBody>
+                  </MessageBar>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <Button
+                    appearance="primary"
+                    type="submit"
+                    icon={<KeyRegular />}
+                    disabled={passphraseLoading || !passphrase.trim()}
+                    className={styles.submitButton}
+                    style={{ flex: 1 }}
+                  >
+                    {passphraseLoading ? 'Deriving key…' : 'Use passphrase'}
+                  </Button>
+                  <Button
+                    appearance="secondary"
+                    onClick={handleSkipEncryption}
+                    disabled={passphraseLoading}
+                    className={styles.submitButton}
+                  >
+                    Skip
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleSignIn} className={styles.form}>
+                <Field label="Username" required>
+                  <Input
+                    value={signInUsername}
+                    onChange={(_, d) => setSignInUsername(d.value)}
+                    placeholder="Enter your username"
+                    disabled={signInLoading}
+                    autoComplete="username"
+                    autoCapitalize="none"
+                  />
+                </Field>
+
+                {signInError && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>{signInError}</MessageBarBody>
+                  </MessageBar>
+                )}
+
+                {signInStatus && (
+                  <div className={styles.yubiKeyHint}>
+                    {signInLoading && <Spinner size="tiny" />}
+                    <Text>{signInStatus}</Text>
+                  </div>
+                )}
+
+                <Button
+                  appearance="primary"
+                  type="submit"
+                  icon={<KeyRegular />}
+                  disabled={signInLoading || !signInUsername.trim()}
+                  className={styles.submitButton}
+                >
+                  {signInLoading ? 'Authenticating...' : 'Sign in with YubiKey'}
+                </Button>
+              </form>
             )}
-
-            {signInStatus && (
-              <div className={styles.yubiKeyHint}>
-                {signInLoading && <Spinner size="tiny" />}
-                <Text>{signInStatus}</Text>
-              </div>
-            )}
-
-            <Button
-              appearance="primary"
-              type="submit"
-              icon={<KeyRegular />}
-              disabled={signInLoading || !signInUsername.trim()}
-              className={styles.submitButton}
-            >
-              {signInLoading ? 'Authenticating...' : 'Sign in with YubiKey'}
-            </Button>
-          </form>
+          </>
         )}
 
         {activeTab === 'register' && (
