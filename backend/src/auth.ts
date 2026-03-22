@@ -62,11 +62,7 @@ router.get('/register/start/:username', async (req: Request, res: Response) => {
       authenticatorSelection: {
         residentKey: 'discouraged',
         userVerification: 'preferred',
-      },
-      // Request the PRF extension so the authenticator initialises the underlying
-      // hmac-secret at registration time. Without this, PRF output will always be
-      // absent for CTAP2 security keys (YubiKeys, etc.) at authentication time.
-      extensions: { prf: {} },
+      }
     });
 
     // Store challenge in DB
