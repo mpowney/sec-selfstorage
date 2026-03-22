@@ -26,6 +26,8 @@ export interface FileRecord {
   uploadedAt: string;
   folderPath: string;
   clientEncrypted: boolean;
+  /** Authentication mechanisms active at upload time: "server", "e2e-roaming", "e2e-platform", "e2e-hybrid", "e2e-unknown" */
+  authMechanisms: string;
 }
 
 declare module 'express-session' {

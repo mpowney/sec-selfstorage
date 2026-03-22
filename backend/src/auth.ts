@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -323,6 +323,142 @@ router.post('/logout', (req: Request, res: Response) => {
     }
     res.json({ success: true });
   });
+});
+
+// ─── Authenticated-user-only middleware ──────────────────────────────────────
+
+function requireUserAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!req.session.userId) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  next();
+}
+
+// GET /auth/credentials — list credentials registered to the current user
+router.get('/credentials', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    type CredRow = { credential_id: string; transports: string; created_at: string };
+    const rows = db
+      .prepare('SELECT credential_id, transports, created_at FROM credentials WHERE user_id = ? ORDER BY created_at ASC')
+      .all(req.session.userId) as CredRow[];
+
+    const credentials = rows.map((r) => ({
+      credentialId: r.credential_id,
+      transports: JSON.parse(r.transports) as AuthenticatorTransportFuture[],
+      createdAt: r.created_at,
+    }));
+
+    res.json({ credentials });
+  } catch (err) {
+    console.error('credentials list error:', err);
+    res.status(500).json({ error: 'Failed to list credentials' });
+  }
+});
+
+// GET /auth/add-credential/start — begin registering an additional authenticator
+// Requires an active authenticated session.
+router.get('/add-credential/start', requireUserAuth, async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+
+    type CredRow = { credential_id: string; transports: string };
+    const existing = db
+      .prepare('SELECT credential_id, transports FROM credentials WHERE user_id = ?')
+      .all(req.session.userId) as CredRow[];
+
+    const excludeCredentials = existing.map((c) => ({
+      id: c.credential_id,
+      transports: JSON.parse(c.transports) as AuthenticatorTransportFuture[],
+    }));
+
+    const options = await generateRegistrationOptions({
+      rpName: RP_NAME,
+      rpID: RP_ID,
+      userName: req.session.username as string,
+      userDisplayName: req.session.username as string,
+      attestationType: 'none',
+      excludeCredentials,
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+      },
+    });
+
+    const challengeId = uuidv4();
+    db.prepare('INSERT INTO challenges (id, challenge, user_id, created_at) VALUES (?, ?, ?, ?)').run(
+      challengeId,
+      options.challenge,
+      req.session.userId,
+      new Date().toISOString(),
+    );
+
+    res.json({ options, challengeId });
+  } catch (err) {
+    console.error('add-credential/start error:', err);
+    res.status(500).json({ error: 'Failed to start credential registration' });
+  }
+});
+
+// POST /auth/add-credential/finish — complete registering an additional authenticator
+router.post('/add-credential/finish', requireUserAuth, async (req: Request, res: Response) => {
+  try {
+    const { response, challengeId } = req.body as { response: unknown; challengeId: string };
+
+    if (!response || !challengeId) {
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+
+    const db = getDb();
+
+    type ChallengeRow = { id: string; challenge: string; user_id: string | null };
+    const challengeRow = db
+      .prepare('SELECT id, challenge, user_id FROM challenges WHERE id = ?')
+      .get(challengeId) as ChallengeRow | undefined;
+
+    if (!challengeRow || challengeRow.user_id !== req.session.userId) {
+      res.status(400).json({ error: 'Invalid or expired challenge' });
+      return;
+    }
+
+    const verification = await verifyRegistrationResponse({
+      response: response as Parameters<typeof verifyRegistrationResponse>[0]['response'],
+      expectedChallenge: challengeRow.challenge,
+      expectedOrigin: RP_ORIGIN,
+      expectedRPID: RP_ID,
+    });
+
+    if (!verification.verified || !verification.registrationInfo) {
+      res.status(400).json({ error: 'Credential verification failed' });
+      return;
+    }
+
+    const { credentialID, credentialPublicKey, counter } = verification.registrationInfo;
+
+    const authResponse = response as { response?: { transports?: AuthenticatorTransportFuture[] } };
+    const transports: AuthenticatorTransportFuture[] = authResponse.response?.transports ?? [];
+
+    db.prepare(
+      'INSERT INTO credentials (id, user_id, credential_id, public_key, counter, transports, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      uuidv4(),
+      req.session.userId,
+      credentialID,
+      Buffer.from(credentialPublicKey).toString('hex'),
+      counter,
+      JSON.stringify(transports),
+      new Date().toISOString(),
+    );
+
+    db.prepare('DELETE FROM challenges WHERE id = ?').run(challengeId);
+
+    res.json({ verified: true });
+  } catch (err) {
+    console.error('add-credential/finish error:', err);
+    res.status(500).json({ error: 'Failed to finish credential registration' });
+  }
 });
 
 export default router;

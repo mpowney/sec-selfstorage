@@ -78,6 +78,15 @@ export function getDb(): Database.Database {
     db.exec('ALTER TABLE files ADD COLUMN client_encrypted INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Migration: add auth_mechanisms column to existing databases
+  // Stores the authentication mechanisms active at upload time, e.g. "server", "e2e-roaming",
+  // "e2e-platform", "e2e-hybrid", or "e2e-unknown".
+  if (!tableInfo.some((col) => col.name === 'auth_mechanisms')) {
+    db.exec("ALTER TABLE files ADD COLUMN auth_mechanisms TEXT NOT NULL DEFAULT 'server'");
+    // Back-fill: existing client-encrypted rows get "e2e-unknown" since we don't know the transport
+    db.exec("UPDATE files SET auth_mechanisms = 'e2e-unknown' WHERE client_encrypted = 1");
+  }
+
   const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
 
   // Migration: add last_login_at column to existing databases

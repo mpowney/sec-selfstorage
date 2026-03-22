@@ -52,9 +52,14 @@ import {
   LockClosedRegular,
   PersonRegular,
   MoreHorizontalRegular,
+  AddRegular,
+  PhoneRegular,
+  WarningRegular,
+  KeyRegular,
 } from '@fluentui/react-icons';
-import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout } from '../api';
-import type { FileRecord } from '../api';
+import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential } from '../api';
+import type { FileRecord, CredentialInfo } from '../api';
+import { browserRegister } from '../webauthn';
 import { formatFileSize, formatDate } from '../utils';
 import UploadArea from './UploadArea';
 
@@ -304,6 +309,33 @@ function isViewable(mimeType: string): boolean {
   return mimeType.startsWith('image/') || mimeType === 'application/pdf';
 }
 
+/** Returns a human-readable label for an authMechanisms value. */
+function authMechanismsLabel(authMechanisms: string): string {
+  switch (authMechanisms) {
+    case 'e2e-platform': return 'E2E (platform authenticator, e.g. TouchID/Face ID)';
+    case 'e2e-roaming': return 'E2E (security key, e.g. YubiKey)';
+    case 'e2e-hybrid': return 'E2E (passkey/hybrid authenticator)';
+    case 'e2e-unknown': return 'E2E (authenticator type unknown)';
+    case 'server': return 'Server-side encrypted only';
+    default: return 'Server-side encrypted only';
+  }
+}
+
+/** Returns the icon used to indicate the type of authenticator that performed E2E encryption. */
+function authMechanismsIcon(authMechanisms: string): React.ReactElement | undefined {
+  if (authMechanisms === 'e2e-platform') return <PhoneRegular />;
+  if (authMechanisms === 'e2e-hybrid') return <PhoneRegular />;
+  if (authMechanisms.startsWith('e2e')) return <KeyRegular />;
+  return undefined;
+}
+
+/** Returns a short display label for a credential based on its transports. */
+function credentialTransportLabel(transports: string[]): string {
+  if (transports.includes('internal')) return 'Platform (TouchID / Face ID)';
+  if (transports.includes('hybrid')) return 'Passkey (hybrid)';
+  return 'Security key (YubiKey)';
+}
+
 export default function FilesPage({ username, credentialId, clientKey, onLogout }: FilesPageProps) {
   const styles = useStyles();
   const [files, setFiles] = useState<FileRecord[]>([]);
@@ -320,6 +352,14 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const previewUrlRef = useRef<string | null>(null);
+
+  // Add-credential state
+  const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
+  const [addCredentialOpen, setAddCredentialOpen] = useState(false);
+  const [addCredentialStatus, setAddCredentialStatus] = useState('');
+  const [addCredentialError, setAddCredentialError] = useState('');
+  const [addCredentialSuccess, setAddCredentialSuccess] = useState(false);
+  const [addCredentialLoading, setAddCredentialLoading] = useState(false);
 
   const loadFiles = useCallback(async (folder: string) => {
     setFilesLoading(true);
@@ -339,6 +379,13 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
     void loadFiles(currentFolder);
   }, [loadFiles, currentFolder]);
 
+  // Load credentials list on mount for display in profile popover
+  useEffect(() => {
+    void listCredentials().then(setCredentials).catch((err: unknown) => {
+      console.warn('Failed to load credentials list:', err instanceof Error ? err.message : err);
+    });
+  }, []);
+
   // Clean up any outstanding preview object URL when the component unmounts
   useEffect(() => {
     return () => {
@@ -351,6 +398,31 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   async function handleLogout() {
     await logout();
     onLogout();
+  }
+
+  async function handleAddCredential() {
+    setAddCredentialError('');
+    setAddCredentialStatus('');
+    setAddCredentialSuccess(false);
+    setAddCredentialLoading(true);
+    try {
+      setAddCredentialStatus('Starting registration...');
+      const { options, challengeId } = await startAddCredential();
+      setAddCredentialStatus('Touch your authenticator (TouchID, Face ID, or security key)...');
+      const credential = await browserRegister(options);
+      setAddCredentialStatus('Verifying...');
+      await finishAddCredential(credential, challengeId);
+      setAddCredentialSuccess(true);
+      setAddCredentialStatus('');
+      // Refresh credentials list
+      const updated = await listCredentials();
+      setCredentials(updated);
+    } catch (err) {
+      setAddCredentialError(err instanceof Error ? err.message : 'Failed to add authenticator');
+      setAddCredentialStatus('');
+    } finally {
+      setAddCredentialLoading(false);
+    }
   }
 
   function handleFilesSelected(selected: File[]) {
@@ -501,6 +573,41 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                     Session encryption only
                   </Badge>
                 )}
+                {credentials.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <Text size={200} style={{ color: 'var(--colorNeutralForeground3)', fontWeight: 600 }}>
+                      Registered authenticators
+                    </Text>
+                    {credentials.map((cred) => {
+                      const isCurrentSession = cred.credentialId === credentialId;
+                      const isPlatform = cred.transports.includes('internal');
+                      const isHybrid = cred.transports.includes('hybrid');
+                      const label = credentialTransportLabel(cred.transports);
+                      return (
+                        <div key={cred.credentialId} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          {isPlatform || isHybrid ? <PhoneRegular fontSize={14} /> : <KeyRegular fontSize={14} />}
+                          <Text size={200}>{label}</Text>
+                          {isCurrentSession && (
+                            <Badge appearance="tint" color="brand" size="small">current</Badge>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <Button
+                  appearance="subtle"
+                  icon={<AddRegular />}
+                  size="small"
+                  onClick={() => {
+                    setAddCredentialOpen(true);
+                    setAddCredentialError('');
+                    setAddCredentialStatus('');
+                    setAddCredentialSuccess(false);
+                  }}
+                >
+                  Add platform authenticator
+                </Button>
                 <Divider />
                 <Button
                   appearance="subtle"
@@ -716,22 +823,41 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                     </td>
                     <td className={mergeClasses(styles.td, styles.mobileHidden)}>{formatDate(file.uploadedAt)}</td>
                     <td className={mergeClasses(styles.td, styles.mobileHidden)}>
-                      <Tooltip
-                        content={
-                          file.clientEncrypted
-                            ? 'End-to-end encrypted (YubiKey + server)'
-                            : 'Server-side encrypted only'
-                        }
-                        relationship="label"
-                      >
-                        <Badge
-                          appearance="tint"
-                          color={file.clientEncrypted ? 'success' : 'subtle'}
-                          icon={file.clientEncrypted ? <LockClosedRegular /> : undefined}
-                        >
-                          {file.clientEncrypted ? 'E2E' : 'Server'}
-                        </Badge>
-                      </Tooltip>
+                      {file.clientEncrypted ? (
+                        file.credentialId === credentialId ? (
+                          <Tooltip
+                            content={`${authMechanismsLabel(file.authMechanisms)} — this session can decrypt`}
+                            relationship="label"
+                          >
+                            <Badge
+                              appearance="tint"
+                              color="success"
+                              icon={authMechanismsIcon(file.authMechanisms) ?? <LockClosedRegular />}
+                            >
+                              E2E ✓
+                            </Badge>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip
+                            content={`${authMechanismsLabel(file.authMechanisms)} — log in with the original authenticator to decrypt client-side`}
+                            relationship="label"
+                          >
+                            <Badge
+                              appearance="tint"
+                              color="warning"
+                              icon={<WarningRegular />}
+                            >
+                              E2E
+                            </Badge>
+                          </Tooltip>
+                        )
+                      ) : (
+                        <Tooltip content="Server-side encrypted only" relationship="label">
+                          <Badge appearance="tint" color="subtle">
+                            Server
+                          </Badge>
+                        </Tooltip>
+                      )}
                     </td>
                     <td className={styles.tdActions}>
                       {/* Desktop: inline icon buttons */}
@@ -945,6 +1071,71 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
               <Button appearance="primary" onClick={handleClosePreview}>
                 Close
               </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+
+      {/* Add Platform Authenticator Dialog */}
+      <Dialog
+        open={addCredentialOpen}
+        onOpenChange={(_, data) => {
+          if (!data.open) {
+            setAddCredentialOpen(false);
+            setAddCredentialError('');
+            setAddCredentialStatus('');
+            setAddCredentialSuccess(false);
+          }
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Add platform authenticator</DialogTitle>
+            <DialogContent>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <Text>
+                  Register an additional authenticator (e.g. TouchID, Face ID, Windows Hello, or a passkey)
+                  to use for E2E encryption. Files you upload after signing in with this authenticator will be
+                  tagged with the authentication mechanism used and can be decrypted by that authenticator.
+                  Files uploaded with a different authenticator remain accessible via server decryption but
+                  require the original authenticator for client-side E2E decryption.
+                </Text>
+                {addCredentialSuccess && (
+                  <MessageBar intent="success">
+                    <MessageBarBody>
+                      Authenticator added successfully! You can now sign in with it to enable E2E encryption.
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {addCredentialError && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>{addCredentialError}</MessageBarBody>
+                  </MessageBar>
+                )}
+                {addCredentialStatus && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {addCredentialLoading && <Spinner size="tiny" />}
+                    <Text size={200}>{addCredentialStatus}</Text>
+                  </div>
+                )}
+              </div>
+            </DialogContent>
+            <DialogActions>
+              <DialogTrigger disableButtonEnhancement>
+                <Button appearance="secondary" disabled={addCredentialLoading}>
+                  {addCredentialSuccess ? 'Close' : 'Cancel'}
+                </Button>
+              </DialogTrigger>
+              {!addCredentialSuccess && (
+                <Button
+                  appearance="primary"
+                  icon={addCredentialLoading ? <Spinner size="tiny" /> : <AddRegular />}
+                  onClick={() => void handleAddCredential()}
+                  disabled={addCredentialLoading}
+                >
+                  {addCredentialLoading ? 'Registering...' : 'Register authenticator'}
+                </Button>
+              )}
             </DialogActions>
           </DialogBody>
         </DialogSurface>

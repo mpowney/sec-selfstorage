@@ -41,6 +41,8 @@ export interface FileRecord {
   uploadedAt: string;
   folderPath: string;
   clientEncrypted: boolean;
+  /** Authentication mechanisms active at upload time: "server", "e2e-roaming", "e2e-platform", "e2e-hybrid", "e2e-unknown" */
+  authMechanisms: string;
 }
 
 // CSRF token cache — fetched once per page load
@@ -277,4 +279,39 @@ export async function deleteAdminUser(userId: string): Promise<void> {
     credentials: 'include',
   });
   if (!res.ok) throw new Error('Failed to delete user');
+}
+
+// Credential management API
+
+export interface CredentialInfo {
+  credentialId: string;
+  transports: string[];
+  createdAt: string;
+}
+
+export async function listCredentials(): Promise<CredentialInfo[]> {
+  const res = await fetch('/api/auth/credentials', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to list credentials');
+  const data = await res.json() as { credentials: CredentialInfo[] };
+  return data.credentials;
+}
+
+export async function startAddCredential(): Promise<{ options: PublicKeyCredentialCreationOptionsJSON; challengeId: string }> {
+  const res = await fetch('/api/auth/add-credential/start', { credentials: 'include' });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to start adding credential');
+  return res.json() as Promise<{ options: PublicKeyCredentialCreationOptionsJSON; challengeId: string }>;
+}
+
+export async function finishAddCredential(
+  credential: RegistrationResponseJSON,
+  challengeId: string,
+): Promise<{ verified: boolean }> {
+  const res = await fetch('/api/auth/add-credential/finish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'include',
+    body: JSON.stringify({ response: credential, challengeId }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to add credential');
+  return res.json() as Promise<{ verified: boolean }>;
 }
