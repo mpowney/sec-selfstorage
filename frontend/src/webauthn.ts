@@ -265,6 +265,25 @@ export async function browserAuthenticate(
     extensionsFromServer: options.extensions,
   });
 
+  // Build the PRF extension input.
+  //
+  // When the server supplies a non-empty allowCredentials list, Safari/WebKit requires
+  // that the PRF salt be provided via evalByCredential (keyed by base64url credential ID).
+  // Providing only the top-level eval field when allowCredentials is non-empty is silently
+  // ignored by WebKit, so PRF output comes back null even with a valid 32-byte salt.
+  //
+  // Strategy: always include eval as a fallback (for discoverable-credential flows and
+  // non-WebKit browsers), and additionally populate evalByCredential for every credential
+  // ID in the allowCredentials list so that WebKit picks up the correct per-credential salt.
+  const prfInput: Record<string, unknown> = {
+    eval: { first: PRF_SALT },
+  };
+  if (options.allowCredentials && options.allowCredentials.length > 0) {
+    prfInput['evalByCredential'] = Object.fromEntries(
+      options.allowCredentials.map((c) => [c.id, { first: PRF_SALT }]),
+    );
+  }
+
   const publicKey: PublicKeyCredentialRequestOptions = {
     ...options,
     challenge: base64urlToArrayBuffer(options.challenge),
@@ -275,16 +294,17 @@ export async function browserAuthenticate(
     })),
     extensions: {
       ...options.extensions,
-      // Request the PRF extension so the authenticator produces a deterministic key-derivation secret.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      prf: { eval: { first: PRF_SALT } } as any,
+      prf: prfInput as any,
     },
   };
 
   console.debug('[E2E debug] browserAuthenticate: calling navigator.credentials.get', {
     prfSaltByteLength: PRF_SALT.byteLength,
     prfSaltSource: 'SHA-256("sec-selfstorage-client-encryption-v1")',
-    extensions: { ...options.extensions, prf: '<eval with salt>' },
+    prfUsingEvalByCredential: !!prfInput['evalByCredential'],
+    prfEvalByCredentialCount: options.allowCredentials?.length ?? 0,
+    extensions: { ...options.extensions, prf: '<eval + evalByCredential with salt>' },
   });
 
   const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential;
