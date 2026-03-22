@@ -6,7 +6,7 @@ const PRF_SALT: ArrayBuffer = new TextEncoder().encode('sec-selfstorage-client-e
 interface PRFExtensionResult {
   results?: { first?: ArrayBuffer };
 }
-interface ExtensionResultsWithPRF extends AuthenticationExtensionsClientOutputs {
+interface ExtensionResultsWithPRF {
   prf?: PRFExtensionResult;
 }
 
