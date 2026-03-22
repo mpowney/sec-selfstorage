@@ -19,8 +19,11 @@ const IV_LEN = 12;
  * Derive a non-extractable AES-256-GCM key from the raw PRF output using HKDF.
  */
 export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey> {
+  console.debug('[E2E debug] deriveClientKey: deriving AES-256-GCM key from PRF output', {
+    prfOutputByteLength: prfOutput.byteLength,
+  });
   const baseKey = await crypto.subtle.importKey('raw', prfOutput, { name: 'HKDF' }, false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
+  const key = await crypto.subtle.deriveKey(
     {
       name: 'HKDF',
       hash: 'SHA-256',
@@ -32,6 +35,11 @@ export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey
     false,
     ['encrypt', 'decrypt'],
   );
+  console.debug('[E2E debug] deriveClientKey: key derived successfully', {
+    algorithm: key.algorithm,
+    usages: key.usages,
+  });
+  return key;
 }
 
 /**
@@ -39,12 +47,18 @@ export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey
  * Output format: [4-byte magic] [12-byte IV] [AES-GCM ciphertext + 16-byte auth tag]
  */
 export async function clientEncryptFile(plaintext: ArrayBuffer, key: CryptoKey): Promise<ArrayBuffer> {
+  console.debug('[E2E debug] clientEncryptFile: encrypting file', {
+    plaintextByteLength: plaintext.byteLength,
+  });
   const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext);
   const out = new Uint8Array(MAGIC_LEN + IV_LEN + ciphertext.byteLength);
   out.set(CLIENT_ENC_MAGIC, 0);
   out.set(iv, MAGIC_LEN);
   out.set(new Uint8Array(ciphertext), MAGIC_LEN + IV_LEN);
+  console.debug('[E2E debug] clientEncryptFile: file encrypted successfully', {
+    outputByteLength: out.buffer.byteLength,
+  });
   return out.buffer;
 }
 
@@ -57,6 +71,11 @@ export async function clientDecryptFile(data: ArrayBuffer, key: CryptoKey | null
   const bytes = new Uint8Array(data);
   const isClientEncrypted =
     bytes.length >= MAGIC_LEN + IV_LEN && CLIENT_ENC_MAGIC.every((b, i) => bytes[i] === b);
+  console.debug('[E2E debug] clientDecryptFile: checking file', {
+    dataByteLength: data.byteLength,
+    isClientEncrypted,
+    hasKey: key !== null,
+  });
   if (!isClientEncrypted) return data;
   if (!key)
     throw new Error(
@@ -64,7 +83,11 @@ export async function clientDecryptFile(data: ArrayBuffer, key: CryptoKey | null
     );
   const iv = bytes.slice(MAGIC_LEN, MAGIC_LEN + IV_LEN);
   const ciphertext = bytes.slice(MAGIC_LEN + IV_LEN);
-  return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  const result = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  console.debug('[E2E debug] clientDecryptFile: file decrypted successfully', {
+    outputByteLength: result.byteLength,
+  });
+  return result;
 }
 
 // Helper to convert base64url to ArrayBuffer
@@ -145,6 +168,14 @@ export type AuthenticationResult = {
 export async function browserRegister(
   options: PublicKeyCredentialCreationOptionsJSON,
 ): Promise<RegistrationResponseJSON> {
+  console.debug('[E2E debug] browserRegister: starting', {
+    rp: options.rp,
+    authenticatorSelection: options.authenticatorSelection,
+    timeout: options.timeout,
+    excludeCredentialsCount: options.excludeCredentials?.length ?? 0,
+    extensionsFromServer: options.extensions,
+  });
+
   const publicKey: PublicKeyCredentialCreationOptions = {
     ...options,
     challenge: base64urlToArrayBuffer(options.challenge),
@@ -168,11 +199,35 @@ export async function browserRegister(
     extensions: { ...options.extensions, prf: {} } as any,
   };
 
+  const registrationExtensions = { ...options.extensions, prf: {} };
+  console.debug('[E2E debug] browserRegister: calling navigator.credentials.create', {
+    extensions: registrationExtensions,
+    authenticatorSelection: options.authenticatorSelection,
+    pubKeyCredParamsAlgs: options.pubKeyCredParams.map((p) => p.alg),
+  });
+
   const credential = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential;
   if (!credential) throw new Error('No credential returned');
 
   const response = credential.response as AuthenticatorAttestationResponse;
   const transports = response.getTransports ? response.getTransports() : [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const authenticatorAttachment = (credential as any).authenticatorAttachment as string | undefined;
+  const clientExtensionResults = credential.getClientExtensionResults();
+  const extResults = clientExtensionResults as ExtensionResultsWithPRF;
+
+  console.debug('[E2E debug] browserRegister: credential received', {
+    idPrefix: credential.id.substring(0, 20) + (credential.id.length > 20 ? '…' : ''),
+    type: credential.type,
+    authenticatorAttachment,
+    transports,
+  });
+  console.debug('[E2E debug] browserRegister: extension results', {
+    prf: extResults.prf,
+    // prf.enabled=true means the hmac-secret was successfully initialized on the key
+    prfEnabled: (extResults.prf as Record<string, unknown> | undefined)?.['enabled'] ?? null,
+    fullExtensionResults: clientExtensionResults,
+  });
 
   return {
     id: credential.id,
@@ -183,13 +238,25 @@ export async function browserRegister(
       transports,
     },
     type: credential.type,
-    clientExtensionResults: credential.getClientExtensionResults(),
+    clientExtensionResults,
   };
 }
 
 export async function browserAuthenticate(
   options: PublicKeyCredentialRequestOptionsJSON,
 ): Promise<AuthenticationResult> {
+  console.debug('[E2E debug] browserAuthenticate: starting', {
+    rpId: options.rpId,
+    timeout: options.timeout,
+    userVerification: options.userVerification,
+    allowCredentials: options.allowCredentials?.map((c) => ({
+      idPrefix: c.id.substring(0, 20) + (c.id.length > 20 ? '…' : ''),
+      type: c.type,
+      transports: c.transports,
+    })),
+    extensionsFromServer: options.extensions,
+  });
+
   const publicKey: PublicKeyCredentialRequestOptions = {
     ...options,
     challenge: base64urlToArrayBuffer(options.challenge),
@@ -206,12 +273,43 @@ export async function browserAuthenticate(
     },
   };
 
+  console.debug('[E2E debug] browserAuthenticate: calling navigator.credentials.get', {
+    prfSaltByteLength: PRF_SALT.byteLength,
+    prfSaltText: 'sec-selfstorage-client-encryption-v1',
+    extensions: { ...options.extensions, prf: '<eval with salt>' },
+  });
+
   const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential;
   if (!credential) throw new Error('No credential returned');
 
   const response = credential.response as AuthenticatorAssertionResponse;
   const extensions = credential.getClientExtensionResults() as ExtensionResultsWithPRF;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const authenticatorAttachment = (credential as any).authenticatorAttachment as string | undefined;
+
+  console.debug('[E2E debug] browserAuthenticate: credential received', {
+    idPrefix: credential.id.substring(0, 20) + (credential.id.length > 20 ? '…' : ''),
+    type: credential.type,
+    authenticatorAttachment,
+  });
+  console.debug('[E2E debug] browserAuthenticate: raw extension results', extensions);
+  console.debug('[E2E debug] browserAuthenticate: PRF extension result', {
+    prfPresent: Object.prototype.hasOwnProperty.call(extensions, 'prf'),
+    prfValue: extensions.prf,
+    prfResultsPresent: !!extensions.prf?.results,
+    prfFirstPresent: !!extensions.prf?.results?.first,
+    prfOutputByteLength: extensions.prf?.results?.first?.byteLength ?? null,
+  });
+
   const prfOutput = extensions.prf?.results?.first ?? null;
+
+  console.debug('[E2E debug] browserAuthenticate: PRF output', {
+    received: prfOutput !== null,
+    byteLength: prfOutput !== null ? prfOutput.byteLength : null,
+    note: prfOutput === null
+      ? 'PRF output is null — E2E encryption will be unavailable for this session'
+      : 'PRF output received — E2E encryption key will be derived',
+  });
 
   return {
     response: {

@@ -97,15 +97,47 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setSignInStatus('');
     setSignInLoading(true);
     try {
+      console.debug('[E2E debug] handleSignIn: environment', {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        webAuthnSupported: typeof window.PublicKeyCredential !== 'undefined',
+        conditionalMediationAvailable: typeof window.PublicKeyCredential !== 'undefined'
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ? typeof (window.PublicKeyCredential as any).isConditionalMediationAvailable === 'function'
+          : null,
+        secureContext: window.isSecureContext,
+        protocol: window.location.protocol,
+        hostname: window.location.hostname,
+      });
       setSignInStatus('Starting authentication...');
       const { options, challengeId } = await startLogin(signInUsername.trim());
+      console.debug('[E2E debug] handleSignIn: login/start options received', {
+        rpId: options.rpId,
+        timeout: options.timeout,
+        userVerification: options.userVerification,
+        allowCredentialsCount: options.allowCredentials?.length ?? 0,
+        allowCredentialTransports: options.allowCredentials?.map((c: { id: string; type: string; transports?: string[] }) => c.transports),
+      });
       setSignInStatus('Touch your YubiKey...');
       const { response: credential, prfOutput } = await browserAuthenticate(options);
+      console.debug('[E2E debug] handleSignIn: authentication complete', {
+        prfOutputReceived: prfOutput !== null,
+        prfOutputByteLength: prfOutput !== null ? prfOutput.byteLength : null,
+      });
       setSignInStatus('Verifying...');
       const result = await finishLogin(credential, challengeId, !!prfOutput);
       const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
+      console.debug('[E2E debug] handleSignIn: login complete', {
+        userId: result.userId,
+        e2eEncryptionActive: clientKey !== null,
+      });
       onLogin(result.userId, result.username, result.credentialId, clientKey);
     } catch (err) {
+      console.debug('[E2E debug] handleSignIn: error', {
+        name: err instanceof Error ? err.name : typeof err,
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       setSignInError(err instanceof Error ? err.message : 'Sign in failed');
       setSignInStatus('');
     } finally {
