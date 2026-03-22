@@ -140,8 +140,10 @@ export default function WebAuthnDebugPanel() {
       appendLog('1. Calling startLogin...');
       const { options, challengeId } = await startLogin(username.trim());
       appendLog(`   challengeId: ${challengeId}`);
+      appendLog(`   rpId: ${options.rpId ?? `(not set — browser defaults to ${window.location.hostname})`}`);
       appendLog(`   server extensions: ${JSON.stringify(options.extensions ?? null)}`);
       appendLog(`   allowCredentials count: ${options.allowCredentials?.length ?? 0}`);
+      appendLog(`   options: ${JSON.stringify(options, null, 2).replace(/\n/g, '\n   ')}`);
       if (options.allowCredentials?.length) {
         appendLog(
           `   transports[0]: ${JSON.stringify(options.allowCredentials[0].transports ?? [])}`,
