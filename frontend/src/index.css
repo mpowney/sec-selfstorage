@@ -15,9 +15,11 @@ body {
 }
 
 /* Prevent iOS Safari from zooming in when inputs receive focus.
-   iOS zooms when the focused element's computed font-size is below 16px. */
+   iOS zooms when the focused element's computed font-size is below 16px.
+   !important is needed to override component library (Fluent UI / Griffel) class styles,
+   which have higher specificity than a bare element selector. */
 input,
 textarea,
 select {
-  font-size: 16px;
+  font-size: 16px !important;
 }
