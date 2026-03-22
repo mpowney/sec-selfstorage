@@ -19,6 +19,7 @@ import {
 import { LockClosedRegular, KeyRegular } from '@fluentui/react-icons';
 import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
 import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
+import WebAuthnDebugPanel from './WebAuthnDebugPanel';
 
 const useStyles = makeStyles({
   root: {
@@ -257,6 +258,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           </form>
         )}
       </Card>
+      <WebAuthnDebugPanel />
     </div>
   );
 }
