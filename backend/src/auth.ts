@@ -60,7 +60,6 @@ router.get('/register/start/:username', async (req: Request, res: Response) => {
       attestationType: 'none',
       excludeCredentials,
       authenticatorSelection: {
-        residentKey: 'preferred',
         userVerification: 'preferred',
       },
     });
