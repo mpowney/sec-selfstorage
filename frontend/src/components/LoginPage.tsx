@@ -102,7 +102,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       setSignInStatus('Touch your YubiKey...');
       const { response: credential, prfOutput } = await browserAuthenticate(options);
       setSignInStatus('Verifying...');
-      const result = await finishLogin(credential, challengeId);
+      const result = await finishLogin(credential, challengeId, !!prfOutput);
       const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
       onLogin(result.userId, result.username, result.credentialId, clientKey);
     } catch (err) {

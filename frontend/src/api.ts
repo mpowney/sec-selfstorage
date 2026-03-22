@@ -106,12 +106,13 @@ export async function startLogin(username: string): Promise<AuthenticationStartR
 export async function finishLogin(
   credential: AuthenticationResponseJSON,
   challengeId: string,
+  e2eEncrypted: boolean,
 ): Promise<{ success: boolean; userId: string; username: string; credentialId: string }> {
   const res = await fetch('/api/auth/login/finish', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
-    body: JSON.stringify({ response: credential, challengeId }),
+    body: JSON.stringify({ response: credential, challengeId, e2eEncrypted }),
   });
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Login failed');
   return res.json() as Promise<{ success: boolean; userId: string; username: string; credentialId: string }>;
@@ -219,4 +220,61 @@ export async function deleteFile(fileId: string): Promise<void> {
     credentials: 'include',
   });
   if (!res.ok) throw new Error('Delete failed');
+}
+
+// Admin API
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  displayName: string;
+  createdAt: string;
+  lastLoginAt: string | null;
+  lastLoginE2e: boolean;
+}
+
+export interface AdminStatus {
+  authenticated: boolean;
+  username?: string;
+}
+
+export async function getAdminStatus(): Promise<AdminStatus> {
+  const res = await fetch('/api/admin/status', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to get admin status');
+  return res.json() as Promise<AdminStatus>;
+}
+
+export async function adminLogin(username: string, password: string): Promise<{ success: boolean; username: string }> {
+  const res = await fetch('/api/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'include',
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Login failed');
+  return res.json() as Promise<{ success: boolean; username: string }>;
+}
+
+export async function adminLogout(): Promise<void> {
+  await fetch('/api/admin/logout', {
+    method: 'POST',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
+  clearCsrfToken();
+}
+
+export async function listAdminUsers(): Promise<AdminUser[]> {
+  const res = await fetch('/api/admin/users', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to list users');
+  return res.json() as Promise<AdminUser[]>;
+}
+
+export async function deleteAdminUser(userId: string): Promise<void> {
+  const res = await fetch(`/api/admin/users/${userId}`, {
+    method: 'DELETE',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error('Failed to delete user');
 }

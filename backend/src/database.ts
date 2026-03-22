@@ -57,6 +57,13 @@ export function getDb(): Database.Database {
       client_encrypted INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS admin_accounts (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   const tableInfo = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
@@ -69,6 +76,18 @@ export function getDb(): Database.Database {
   // Migration: add client_encrypted column to existing databases
   if (!tableInfo.some((col) => col.name === 'client_encrypted')) {
     db.exec('ALTER TABLE files ADD COLUMN client_encrypted INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
+
+  // Migration: add last_login_at column to existing databases
+  if (!usersTableInfo.some((col) => col.name === 'last_login_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN last_login_at TEXT');
+  }
+
+  // Migration: add last_login_e2e column to existing databases
+  if (!usersTableInfo.some((col) => col.name === 'last_login_e2e')) {
+    db.exec('ALTER TABLE users ADD COLUMN last_login_e2e INTEGER NOT NULL DEFAULT 0');
   }
 
   return db;
