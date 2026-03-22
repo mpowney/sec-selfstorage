@@ -5,9 +5,12 @@ import rateLimit from 'express-rate-limit';
 import { randomBytes } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 import { getDb } from './database.js';
 import authRouter from './auth.js';
 import filesRouter from './files.js';
+import adminRouter from './admin.js';
 
 const app = express();
 const PORT = parseInt(process.env['PORT'] ?? '4000', 10);
@@ -22,6 +25,29 @@ if (process.env['TRUST_PROXY']) {
 
 // Initialize database
 getDb();
+
+// Ensure default admin account exists; generate a password if this is the first startup
+async function initAdminAccount(): Promise<void> {
+  const db = getDb();
+  const existing = db
+    .prepare('SELECT id FROM admin_accounts WHERE username = ?')
+    .get('admin');
+  if (!existing) {
+    const password = randomBytes(24).toString('hex');
+    const hash = await bcrypt.hash(password, 12);
+    db.prepare(
+      'INSERT INTO admin_accounts (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)',
+    ).run(uuidv4(), 'admin', hash, new Date().toISOString());
+    console.log('='.repeat(60));
+    console.log('  ADMIN ACCOUNT CREATED');
+    console.log(`  Username: admin`);
+    console.log(`  Password: ${password}`);
+    console.log('  Store this password securely — it will not be shown again.');
+    console.log('='.repeat(60));
+  }
+}
+
+void initAdminAccount();
 
 // Middleware
 app.use(cors({
@@ -154,6 +180,7 @@ app.get('/api/csrf-token', (req, res) => {
 // API routes — CSRF protection applied to all state-changing requests
 app.use('/api/auth', authLimiter, csrfProtection, authRouter);
 app.use('/api/files', fileLimiter, csrfProtection, filesRouter);
+app.use('/api/admin', authLimiter, csrfProtection, adminRouter);
 
 // Serve frontend static files in production
 const frontendDist = join(__dirname, '..', '..', 'frontend', 'dist');

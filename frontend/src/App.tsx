@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Spinner, makeStyles } from '@fluentui/react-components';
-import { getAuthStatus } from './api';
+import { getAuthStatus, getAdminStatus } from './api';
 import LoginPage from './components/LoginPage';
 import FilesPage from './components/FilesPage';
+import AdminLoginPage from './components/AdminLoginPage';
+import AdminDashboard from './components/AdminDashboard';
 
 const useStyles = makeStyles({
   loading: {
@@ -13,6 +15,8 @@ const useStyles = makeStyles({
   },
 });
 
+const isAdminPath = window.location.pathname.startsWith('/admin');
+
 export default function App() {
   const styles = useStyles();
   const [loading, setLoading] = useState(true);
@@ -22,16 +26,30 @@ export default function App() {
   const [credentialId, setCredentialId] = useState<string | undefined>();
   const [clientKey, setClientKey] = useState<CryptoKey | null>(null);
 
+  // Admin state
+  const [adminAuthenticated, setAdminAuthenticated] = useState(false);
+  const [adminUsername, setAdminUsername] = useState<string | undefined>();
+
   useEffect(() => {
-    getAuthStatus()
-      .then((status) => {
-        setAuthenticated(status.authenticated);
-        setUsername(status.username);
-        setUserId(status.userId);
-        setCredentialId(status.credentialId);
-      })
-      .catch(() => setAuthenticated(false))
-      .finally(() => setLoading(false));
+    if (isAdminPath) {
+      getAdminStatus()
+        .then((status) => {
+          setAdminAuthenticated(status.authenticated);
+          setAdminUsername(status.username);
+        })
+        .catch(() => setAdminAuthenticated(false))
+        .finally(() => setLoading(false));
+    } else {
+      getAuthStatus()
+        .then((status) => {
+          setAuthenticated(status.authenticated);
+          setUsername(status.username);
+          setUserId(status.userId);
+          setCredentialId(status.credentialId);
+        })
+        .catch(() => setAuthenticated(false))
+        .finally(() => setLoading(false));
+    }
   }, []);
 
   if (loading) {
@@ -42,6 +60,30 @@ export default function App() {
     );
   }
 
+  // Admin route
+  if (isAdminPath) {
+    if (!adminAuthenticated) {
+      return (
+        <AdminLoginPage
+          onLogin={(uname) => {
+            setAdminUsername(uname);
+            setAdminAuthenticated(true);
+          }}
+        />
+      );
+    }
+    return (
+      <AdminDashboard
+        adminUsername={adminUsername ?? ''}
+        onLogout={() => {
+          setAdminAuthenticated(false);
+          setAdminUsername(undefined);
+        }}
+      />
+    );
+  }
+
+  // Regular user route
   if (!authenticated) {
     return (
       <LoginPage

@@ -294,6 +294,14 @@ router.post('/login/finish', async (req: Request, res: Response) => {
       .prepare('SELECT id, username FROM users WHERE id = ?')
       .get(challengeRow.user_id) as UserRow;
 
+    // Record last login timestamp and e2e encryption status
+    const { e2eEncrypted } = req.body as { e2eEncrypted?: boolean };
+    db.prepare('UPDATE users SET last_login_at = ?, last_login_e2e = ? WHERE id = ?').run(
+      new Date().toISOString(),
+      e2eEncrypted ? 1 : 0,
+      user.id,
+    );
+
     // Set session
     req.session.userId = user.id;
     req.session.username = user.username;
