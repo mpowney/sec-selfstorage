@@ -1,0 +1,9 @@
+# Tear down env and replace with updated code base
+git pull
+
+export SYSTEM_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+export SESSION_SECRET="$(openssl rand -hex 32)"
+docker compose build
+docker compose down
+rm data/*
+docker compose up
