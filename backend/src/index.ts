@@ -55,7 +55,7 @@ function csrfProtection(req: Request, res: Response, next: NextFunction): void {
   const sessionToken: string | undefined = req.session.csrfToken as string | undefined;
   const headerToken = req.headers['x-csrf-token'];
   if (!sessionToken || !headerToken || headerToken !== sessionToken) {
-    res.status(403).json({ error: 'Invalid CSRF token' });
+    res.status(403).json({ error: `Invalid CSRF token (${headerToken} !== ${sessionToken})` });
     return;
   }
   next();
