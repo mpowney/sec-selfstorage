@@ -1,6 +1,15 @@
 // PRF salt — a fixed application-specific constant; all clients must use the same value
-// so that the YubiKey produces the same PRF output on every authentication
-const PRF_SALT: ArrayBuffer = new TextEncoder().encode('sec-selfstorage-client-encryption-v1').buffer as ArrayBuffer;
+// so that the authenticator produces the same PRF output on every authentication.
+// Must be exactly 32 bytes: WebKit/Safari enforces a strict 32-byte length for PRF
+// eval inputs and silently ignores the extension (returning no PRF output) when any
+// other size is supplied.  The value below is SHA-256("sec-selfstorage-client-encryption-v1"),
+// which is derived from the application-specific label and is exactly 32 bytes.
+const PRF_SALT: ArrayBuffer = new Uint8Array([
+  0x3b, 0xba, 0x6b, 0xfb, 0x96, 0x3e, 0x10, 0x50,
+  0xb3, 0xa4, 0x74, 0x32, 0x59, 0xb6, 0xf2, 0x9f,
+  0x75, 0xbc, 0x1d, 0xe5, 0x8f, 0x90, 0xed, 0x3a,
+  0x6d, 0xa7, 0x9b, 0x69, 0x56, 0x8d, 0xc4, 0x75,
+]).buffer as ArrayBuffer;
 
 // PRF extension result types (not yet in standard WebAuthn TypeScript definitions)
 interface PRFExtensionResult {
@@ -199,9 +208,8 @@ export async function browserRegister(
     extensions: { ...options.extensions, prf: {} } as any,
   };
 
-  const registrationExtensions = { ...options.extensions, prf: {} };
   console.debug('[E2E debug] browserRegister: calling navigator.credentials.create', {
-    extensions: registrationExtensions,
+    extensions: publicKey.extensions,
     authenticatorSelection: options.authenticatorSelection,
     pubKeyCredParamsAlgs: options.pubKeyCredParams.map((p) => p.alg),
   });
@@ -267,7 +275,7 @@ export async function browserAuthenticate(
     })),
     extensions: {
       ...options.extensions,
-      // Request the PRF extension so the YubiKey produces a deterministic key-derivation secret.
+      // Request the PRF extension so the authenticator produces a deterministic key-derivation secret.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       prf: { eval: { first: PRF_SALT } } as any,
     },
@@ -275,7 +283,7 @@ export async function browserAuthenticate(
 
   console.debug('[E2E debug] browserAuthenticate: calling navigator.credentials.get', {
     prfSaltByteLength: PRF_SALT.byteLength,
-    prfSaltText: 'sec-selfstorage-client-encryption-v1',
+    prfSaltSource: 'SHA-256("sec-selfstorage-client-encryption-v1")',
     extensions: { ...options.extensions, prf: '<eval with salt>' },
   });
 
