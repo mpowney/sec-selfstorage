@@ -33,7 +33,7 @@ async function initAdminAccount(): Promise<void> {
     .prepare('SELECT id FROM admin_accounts WHERE username = ?')
     .get('admin');
   if (!existing) {
-    const password = randomBytes(16).toString('hex');
+    const password = randomBytes(24).toString('hex');
     const hash = await bcrypt.hash(password, 12);
     db.prepare(
       'INSERT INTO admin_accounts (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)',
