@@ -84,7 +84,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   // Register state
   const [regUsername, setRegUsername] = useState('');
-  const [regDisplayName, setRegDisplayName] = useState('');
   const [regLoading, setRegLoading] = useState(false);
   const [regStatus, setRegStatus] = useState('');
   const [regError, setRegError] = useState('');
@@ -154,11 +153,10 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       setRegStatus('Touch your authenticator to register...');
       const credential = await browserRegister(options);
       setRegStatus('Finishing registration...');
-      await finishRegistration(credential, challengeId, regUsername.trim(), regDisplayName.trim() || regUsername.trim());
+      await finishRegistration(credential, challengeId, regUsername.trim());
       setRegSuccess(true);
       setRegStatus('');
       setRegUsername('');
-      setRegDisplayName('');
     } catch (err) {
       setRegError(err instanceof Error ? err.message : 'Registration failed');
       setRegStatus('');
@@ -243,16 +241,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 disabled={regLoading}
                 autoComplete="username"
                 autoCapitalize="none"
-              />
-            </Field>
-
-            <Field label="Display name">
-              <Input
-                value={regDisplayName}
-                onChange={(_, d) => setRegDisplayName(d.value)}
-                placeholder="Your display name (optional)"
-                disabled={regLoading}
-                autoComplete="name"
               />
             </Field>
 

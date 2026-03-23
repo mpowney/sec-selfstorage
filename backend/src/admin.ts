@@ -79,14 +79,13 @@ router.get('/users', requireAdmin, (req: Request, res: Response) => {
     type UserRow = {
       id: string;
       username: string;
-      display_name: string;
       created_at: string;
       last_login_at: string | null;
       last_login_e2e: number;
     };
     const users = db
       .prepare(
-        'SELECT id, username, display_name, created_at, last_login_at, last_login_e2e FROM users ORDER BY created_at DESC',
+        'SELECT id, username, created_at, last_login_at, last_login_e2e FROM users ORDER BY created_at DESC',
       )
       .all() as UserRow[];
 
@@ -94,7 +93,6 @@ router.get('/users', requireAdmin, (req: Request, res: Response) => {
       users.map((u) => ({
         id: u.id,
         username: u.username,
-        displayName: u.display_name,
         createdAt: u.created_at,
         lastLoginAt: u.last_login_at ?? null,
         lastLoginE2e: u.last_login_e2e === 1,

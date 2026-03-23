@@ -82,13 +82,12 @@ export async function finishRegistration(
   credential: RegistrationResponseJSON,
   challengeId: string,
   username: string,
-  displayName: string,
 ): Promise<{ success: boolean }> {
   const res = await fetch('/api/auth/register/finish', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
-    body: JSON.stringify({ response: credential, challengeId, username, displayName }),
+    body: JSON.stringify({ response: credential, challengeId, username }),
   });
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Registration finish failed');
   return res.json() as Promise<{ success: boolean }>;
@@ -229,7 +228,6 @@ export async function deleteFile(fileId: string): Promise<void> {
 export interface AdminUser {
   id: string;
   username: string;
-  displayName: string;
   createdAt: string;
   lastLoginAt: string | null;
   lastLoginE2e: boolean;

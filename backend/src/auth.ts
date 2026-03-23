@@ -84,12 +84,11 @@ router.get('/register/start/:username', async (req: Request, res: Response) => {
 // POST /auth/register/finish
 router.post('/register/finish', async (req: Request, res: Response) => {
   try {
-    const { response, credential, challengeId, username, displayName } = req.body as {
+    const { response, credential, challengeId, username } = req.body as {
       response: unknown;
       credential?: unknown;
       challengeId: string;
       username: string;
-      displayName?: string;
     };
 
     const webauthnResponse = response ?? credential;
@@ -130,8 +129,8 @@ router.post('/register/finish', async (req: Request, res: Response) => {
     if (!userId) {
       userId = uuidv4();
       db.prepare(
-        'INSERT INTO users (id, username, display_name, created_at) VALUES (?, ?, ?, ?)',
-      ).run(userId, username, displayName ?? username, new Date().toISOString());
+        'INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)',
+      ).run(userId, username, new Date().toISOString());
     }
 
     // Get transports from the response if available
@@ -172,9 +171,9 @@ router.post('/login/start', async (req: Request, res: Response) => {
 
     const db = getDb();
 
-    type UserRow = { id: string; username: string; display_name: string };
+    type UserRow = { id: string; username: string };
     const user = db
-      .prepare('SELECT id, username, display_name FROM users WHERE username = ?')
+      .prepare('SELECT id, username FROM users WHERE username = ?')
       .get(username) as UserRow | undefined;
 
     if (!user) {

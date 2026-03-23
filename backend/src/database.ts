@@ -20,7 +20,6 @@ export function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
-      display_name TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
 
@@ -115,6 +114,20 @@ export function getDb(): Database.Database {
   // Migration: add last_login_e2e column to existing databases
   if (!usersTableInfo.some((col) => col.name === 'last_login_e2e')) {
     db.exec('ALTER TABLE users ADD COLUMN last_login_e2e INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Migration: drop display_name column from users (no longer used)
+  if (usersTableInfo.some((col) => col.name === 'display_name')) {
+    try {
+      db.exec('ALTER TABLE users DROP COLUMN display_name');
+    } catch (err) {
+      // Older SQLite versions (< 3.35) do not support DROP COLUMN — the column becomes
+      // unused but the database remains functional. Log other unexpected errors.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('no such column') && !msg.includes('syntax error')) {
+        console.warn('Could not drop display_name column (SQLite may be too old):', msg);
+      }
+    }
   }
 
   return db;
