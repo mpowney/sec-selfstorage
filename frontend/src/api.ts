@@ -287,6 +287,7 @@ export interface CredentialInfo {
   credentialId: string;
   transports: string[];
   createdAt: string;
+  nameEncrypted: string | null;
 }
 
 export async function listCredentials(): Promise<CredentialInfo[]> {
@@ -332,4 +333,37 @@ export async function finishAddCredential(
   });
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to add credential');
   return res.json() as Promise<{ verified: boolean }>;
+}
+
+export async function updateCredentialName(credentialId: string, nameEncrypted: string | null): Promise<void> {
+  const res = await fetch(`/api/auth/credentials/${encodeURIComponent(credentialId)}/name`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'include',
+    body: JSON.stringify({ nameEncrypted }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to update credential name');
+}
+
+// Admin credential management API
+
+export interface AdminCredential {
+  credentialId: string;
+  transports: string[];
+  createdAt: string;
+}
+
+export async function listAdminUserCredentials(userId: string): Promise<AdminCredential[]> {
+  const res = await fetch(`/api/admin/users/${userId}/credentials`, { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to list credentials');
+  return res.json() as Promise<AdminCredential[]>;
+}
+
+export async function revokeAdminUserCredential(userId: string, credentialId: string): Promise<void> {
+  const res = await fetch(`/api/admin/users/${userId}/credentials/${encodeURIComponent(credentialId)}`, {
+    method: 'DELETE',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to revoke credential');
 }

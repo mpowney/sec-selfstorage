@@ -339,21 +339,53 @@ function requireUserAuth(req: Request, res: Response, next: NextFunction): void 
 router.get('/credentials', requireUserAuth, (req: Request, res: Response) => {
   try {
     const db = getDb();
-    type CredRow = { credential_id: string; transports: string; created_at: string };
+    type CredRow = { credential_id: string; transports: string; created_at: string; name_encrypted: string | null };
     const rows = db
-      .prepare('SELECT credential_id, transports, created_at FROM credentials WHERE user_id = ? ORDER BY created_at ASC')
+      .prepare('SELECT credential_id, transports, created_at, name_encrypted FROM credentials WHERE user_id = ? ORDER BY created_at ASC')
       .all(req.session.userId) as CredRow[];
 
     const credentials = rows.map((r) => ({
       credentialId: r.credential_id,
       transports: JSON.parse(r.transports) as AuthenticatorTransportFuture[],
       createdAt: r.created_at,
+      nameEncrypted: r.name_encrypted ?? null,
     }));
 
     res.json({ credentials });
   } catch (err) {
     console.error('credentials list error:', err);
     res.status(500).json({ error: 'Failed to list credentials' });
+  }
+});
+
+// PATCH /auth/credentials/:credentialId/name — update the encrypted display name for an authenticator
+router.patch('/credentials/:credentialId/name', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const { credentialId } = req.params;
+    const { nameEncrypted } = req.body as { nameEncrypted?: string | null };
+
+    const db = getDb();
+
+    // Verify the credential belongs to the authenticated user
+    const credRow = db
+      .prepare('SELECT id FROM credentials WHERE credential_id = ? AND user_id = ?')
+      .get(credentialId, req.session.userId) as { id: string } | undefined;
+
+    if (!credRow) {
+      res.status(404).json({ error: 'Credential not found' });
+      return;
+    }
+
+    db.prepare('UPDATE credentials SET name_encrypted = ? WHERE credential_id = ? AND user_id = ?').run(
+      nameEncrypted ?? null,
+      credentialId,
+      req.session.userId,
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('credentials name update error:', err);
+    res.status(500).json({ error: 'Failed to update credential name' });
   }
 });
 

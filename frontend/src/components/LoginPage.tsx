@@ -99,7 +99,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     try {
       setSignInStatus('Starting authentication...');
       const { options, challengeId } = await startLogin(signInUsername.trim());
-      setSignInStatus('Touch your YubiKey...');
+      setSignInStatus('Touch your authenticator...');
       const { response: credential, prfOutput } = await browserAuthenticate(options);
       setSignInStatus('Verifying...');
       const result = await finishLogin(credential, challengeId, !!prfOutput);
@@ -151,7 +151,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     try {
       setRegStatus('Starting registration...');
       const { options, challengeId } = await startRegistration(regUsername.trim());
-      setRegStatus('Touch your YubiKey to register...');
+      setRegStatus('Touch your authenticator to register...');
       const credential = await browserRegister(options);
       setRegStatus('Finishing registration...');
       await finishRegistration(credential, challengeId, regUsername.trim(), regDisplayName.trim() || regUsername.trim());
@@ -220,7 +220,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={signInLoading || !signInUsername.trim()}
               className={styles.submitButton}
             >
-              {signInLoading ? 'Authenticating...' : 'Sign in with YubiKey'}
+              {signInLoading ? 'Authenticating...' : 'Sign in with authenticator'}
             </Button>
           </form>
         )}
@@ -230,7 +230,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             {regSuccess && (
               <MessageBar intent="success">
                 <MessageBarBody>
-                  YubiKey registered successfully! Switch to the Sign In tab to log in.
+                  Authenticator registered successfully! Switch to the Sign In tab to log in.
                 </MessageBarBody>
               </MessageBar>
             )}
@@ -276,11 +276,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={regLoading || !regUsername.trim()}
               className={styles.submitButton}
             >
-              {regLoading ? 'Registering...' : 'Register YubiKey'}
+              {regLoading ? 'Registering...' : 'Register authenticator'}
             </Button>
 
             <Text size={200} style={{ color: 'var(--colorNeutralForeground3)' }}>
-              Insert your YubiKey before clicking Register.
+              Insert a security key or use a platform authenticator (Touch ID, Face ID, Windows Hello).
             </Text>
           </form>
         )}

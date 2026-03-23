@@ -1,5 +1,5 @@
 // PRF salt — a fixed application-specific constant; all clients must use the same value
-// so that the YubiKey produces the same PRF output on every authentication
+// so that the authenticator produces the same PRF output on every authentication
 const PRF_SALT: ArrayBuffer = new TextEncoder().encode('sec-selfstorage-client-encryption-v1').buffer as ArrayBuffer;
 
 // PRF extension result types (not yet in standard WebAuthn TypeScript definitions)
@@ -221,7 +221,7 @@ export async function browserRegister(
     })),
     // Request PRF at registration so the authenticator initialises the hmac-secret
     // extension for this credential. Without this, PRF will always return null at
-    // authentication time for CTAP2 security keys (YubiKeys, etc.).
+    // authentication time for CTAP2 security keys (security keys, passkeys, etc.).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     extensions: { ...options.extensions, prf: {} } as any,
   };
@@ -258,7 +258,7 @@ export async function browserAuthenticate(
     })),
     extensions: {
       ...options.extensions,
-      // Request the PRF extension so the YubiKey produces a deterministic key-derivation secret.
+      // Request the PRF extension so the authenticator produces a deterministic key-derivation secret.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       prf: { eval: { first: PRF_SALT } } as any,
     },

@@ -57,9 +57,9 @@ import {
   WarningRegular,
   KeyRegular,
 } from '@fluentui/react-icons';
-import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential, getWrappedKey, storeWrappedKey, startLogin } from '../api';
+import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential, getWrappedKey, storeWrappedKey, startLogin, updateCredentialName } from '../api';
 import type { FileRecord, CredentialInfo } from '../api';
-import { browserRegister, browserAuthenticate, deriveWrappingKey, wrapMasterKey, unwrapMasterKey } from '../webauthn';
+import { browserRegister, browserAuthenticate, deriveWrappingKey, wrapMasterKey, unwrapMasterKey, clientEncryptFile, clientDecryptFile, arrayBufferToBase64url, base64urlToArrayBuffer } from '../webauthn';
 import { formatFileSize, formatDate } from '../utils';
 import UploadArea from './UploadArea';
 
@@ -313,7 +313,7 @@ function isViewable(mimeType: string): boolean {
 function authMechanismsLabel(authMechanisms: string): string {
   switch (authMechanisms) {
     case 'e2e-platform': return 'E2E (platform authenticator, e.g. TouchID/Face ID)';
-    case 'e2e-roaming': return 'E2E (security key, e.g. YubiKey)';
+    case 'e2e-roaming': return 'E2E (security key)';
     case 'e2e-hybrid': return 'E2E (passkey/hybrid authenticator)';
     case 'e2e-unknown': return 'E2E (authenticator type unknown)';
     case 'server': return 'Server-side encrypted only';
@@ -331,9 +331,9 @@ function authMechanismsIcon(authMechanisms: string): React.ReactElement | undefi
 
 /** Returns a short display label for a credential based on its transports. */
 function credentialTransportLabel(transports: string[]): string {
-  if (transports.includes('internal')) return 'Platform (TouchID / Face ID)';
+  if (transports.includes('internal')) return 'Platform authenticator (TouchID / Face ID)';
   if (transports.includes('hybrid')) return 'Passkey (hybrid)';
-  return 'Security key (YubiKey)';
+  return 'Security key';
 }
 
 export default function FilesPage({ username, credentialId, clientKey, onLogout }: FilesPageProps) {
@@ -355,7 +355,9 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
 
   // Add-credential state
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
+  const [decryptedCredentialNames, setDecryptedCredentialNames] = useState<Record<string, string>>({});
   const [addCredentialOpen, setAddCredentialOpen] = useState(false);
+  const [addCredentialName, setAddCredentialName] = useState('');
   const [addCredentialStatus, setAddCredentialStatus] = useState('');
   const [addCredentialError, setAddCredentialError] = useState('');
   const [addCredentialSuccess, setAddCredentialSuccess] = useState(false);
@@ -379,12 +381,29 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
     void loadFiles(currentFolder);
   }, [loadFiles, currentFolder]);
 
-  // Load credentials list on mount for display in profile popover
+  // Load credentials list on mount for display in profile popover; decrypt names if clientKey available
   useEffect(() => {
-    void listCredentials().then(setCredentials).catch((err: unknown) => {
+    void listCredentials().then(async (creds) => {
+      setCredentials(creds);
+      if (!clientKey) return;
+      const names: Record<string, string> = {};
+      await Promise.all(
+        creds.map(async (cred) => {
+          if (!cred.nameEncrypted) return;
+          try {
+            const encBytes = base64urlToArrayBuffer(cred.nameEncrypted);
+            const decBytes = await clientDecryptFile(encBytes, clientKey);
+            names[cred.credentialId] = new TextDecoder().decode(decBytes);
+          } catch {
+            // Decryption failed (e.g. encrypted with a different key) — skip
+          }
+        }),
+      );
+      setDecryptedCredentialNames(names);
+    }).catch((err: unknown) => {
       console.warn('Failed to load credentials list:', err instanceof Error ? err.message : err);
     });
-  }, []);
+  }, [clientKey]);
 
   // Clean up any outstanding preview object URL when the component unmounts
   useEffect(() => {
@@ -447,13 +466,39 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
           // still registered; cross-credential decryption can be set up by signing in with
           // the new credential and then re-adding it.
         }
+
+        // Step 3: Encrypt and store the authenticator name if provided
+        const trimmedName = addCredentialName.trim();
+        if (trimmedName) {
+          try {
+            const encBytes = await clientEncryptFile(new TextEncoder().encode(trimmedName).buffer as ArrayBuffer, clientKey);
+            await updateCredentialName(newCredentialId, arrayBufferToBase64url(encBytes));
+          } catch {
+            // Name storage failure is non-fatal
+          }
+        }
       }
 
       setAddCredentialSuccess(true);
       setAddCredentialStatus('');
-      // Refresh credentials list
+      setAddCredentialName('');
+      // Refresh credentials list and decrypt names
       const updated = await listCredentials();
       setCredentials(updated);
+      if (clientKey) {
+        const names: Record<string, string> = { ...decryptedCredentialNames };
+        await Promise.all(
+          updated.map(async (cred) => {
+            if (!cred.nameEncrypted) return;
+            try {
+              const encBytes = base64urlToArrayBuffer(cred.nameEncrypted);
+              const decBytes = await clientDecryptFile(encBytes, clientKey);
+              names[cred.credentialId] = new TextDecoder().decode(decBytes);
+            } catch { /* skip */ }
+          }),
+        );
+        setDecryptedCredentialNames(names);
+      }
     } catch (err) {
       setAddCredentialError(err instanceof Error ? err.message : 'Failed to add authenticator');
       setAddCredentialStatus('');
@@ -620,10 +665,11 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                       const isPlatform = cred.transports.includes('internal');
                       const isHybrid = cred.transports.includes('hybrid');
                       const label = credentialTransportLabel(cred.transports);
+                      const displayName = decryptedCredentialNames[cred.credentialId];
                       return (
                         <div key={cred.credentialId} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           {isPlatform || isHybrid ? <PhoneRegular fontSize={14} /> : <KeyRegular fontSize={14} />}
-                          <Text size={200}>{label}</Text>
+                          <Text size={200}>{displayName ? displayName : label}</Text>
                           {isCurrentSession && (
                             <Badge appearance="tint" color="brand" size="small">current</Badge>
                           )}
@@ -641,9 +687,10 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                     setAddCredentialError('');
                     setAddCredentialStatus('');
                     setAddCredentialSuccess(false);
+                    setAddCredentialName('');
                   }}
                 >
-                  Add platform authenticator
+                  Add authenticator
                 </Button>
                 <Divider />
                 <Button
@@ -1113,7 +1160,7 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
         </DialogSurface>
       </Dialog>
 
-      {/* Add Platform Authenticator Dialog */}
+      {/* Add Authenticator Dialog */}
       <Dialog
         open={addCredentialOpen}
         onOpenChange={(_, data) => {
@@ -1122,20 +1169,36 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
             setAddCredentialError('');
             setAddCredentialStatus('');
             setAddCredentialSuccess(false);
+            setAddCredentialName('');
           }
         }}
       >
         <DialogSurface>
           <DialogBody>
-            <DialogTitle>Add platform authenticator</DialogTitle>
+            <DialogTitle>Add authenticator</DialogTitle>
             <DialogContent>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <Text>
-                  Register an additional authenticator (e.g. TouchID, Face ID, Windows Hello, or a passkey)
+                  Register an additional authenticator (e.g. security key, TouchID, Face ID, Windows Hello, or a passkey)
                   to share the same encryption key. You will be prompted twice: once to register the
                   authenticator and once to activate shared encryption. After this, signing in with either
                   authenticator will give access to all your E2E encrypted files.
                 </Text>
+                {clientKey && !addCredentialLoading && !addCredentialSuccess && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <Label htmlFor="add-cred-name">Authenticator name (optional)</Label>
+                    <Input
+                      id="add-cred-name"
+                      placeholder="e.g. Work security key, Home laptop"
+                      value={addCredentialName}
+                      onChange={(_, d) => setAddCredentialName(d.value)}
+                      disabled={addCredentialLoading}
+                    />
+                    <Text size={100} style={{ color: 'var(--colorNeutralForeground3)' }}>
+                      The name is encrypted and only visible to you.
+                    </Text>
+                  </div>
+                )}
                 {addCredentialSuccess && (
                   <MessageBar intent="success">
                     <MessageBarBody>

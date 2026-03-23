@@ -98,6 +98,13 @@ export function getDb(): Database.Database {
     db.exec("UPDATE files SET auth_mechanisms = 'e2e-unknown' WHERE client_encrypted = 1");
   }
 
+  const credentialsTableInfo = db.prepare('PRAGMA table_info(credentials)').all() as Array<{ name: string }>;
+
+  // Migration: add name_encrypted column to credentials (stores E2E-encrypted authenticator name)
+  if (!credentialsTableInfo.some((col) => col.name === 'name_encrypted')) {
+    db.exec('ALTER TABLE credentials ADD COLUMN name_encrypted TEXT');
+  }
+
   const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
 
   // Migration: add last_login_at column to existing databases

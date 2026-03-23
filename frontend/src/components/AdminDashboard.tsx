@@ -23,10 +23,14 @@ import {
   TableHeader,
   TableHeaderCell,
   TableRow,
+  Popover,
+  PopoverTrigger,
+  PopoverSurface,
+  Tooltip,
 } from '@fluentui/react-components';
-import { SignOutRegular, DeleteRegular, ShieldKeyholeRegular, LockClosedRegular } from '@fluentui/react-icons';
-import { listAdminUsers, deleteAdminUser, adminLogout } from '../api';
-import type { AdminUser } from '../api';
+import { SignOutRegular, DeleteRegular, ShieldKeyholeRegular, LockClosedRegular, KeyRegular, PhoneRegular } from '@fluentui/react-icons';
+import { listAdminUsers, deleteAdminUser, adminLogout, listAdminUserCredentials, revokeAdminUserCredential } from '../api';
+import type { AdminUser, AdminCredential } from '../api';
 import { formatDate } from '../utils';
 
 const useStyles = makeStyles({
@@ -93,6 +97,19 @@ interface AdminDashboardProps {
   onLogout: () => void;
 }
 
+/** Returns a short display label for an authenticator based on its WebAuthn transports. */
+function credentialTypeLabel(transports: string[]): string {
+  if (transports.includes('internal')) return 'Platform authenticator';
+  if (transports.includes('hybrid')) return 'Passkey (hybrid)';
+  return 'Security key';
+}
+
+/** Returns the icon for an authenticator type. */
+function credentialTypeIcon(transports: string[]): React.ReactElement {
+  if (transports.includes('internal') || transports.includes('hybrid')) return <PhoneRegular fontSize={14} />;
+  return <KeyRegular fontSize={14} />;
+}
+
 export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboardProps) {
   const styles = useStyles();
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -100,6 +117,14 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState('');
+
+  // Per-user credential popover state
+  const [credPopoverUserId, setCredPopoverUserId] = useState<string | null>(null);
+  const [credPopoverCredentials, setCredPopoverCredentials] = useState<AdminCredential[]>([]);
+  const [credPopoverLoading, setCredPopoverLoading] = useState(false);
+  const [credPopoverError, setCredPopoverError] = useState('');
+  const [revokingCredId, setRevokingCredId] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState('');
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -133,6 +158,35 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
       setDeleteError(err instanceof Error ? err.message : 'Failed to delete user');
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleOpenCredentialPopover(userId: string) {
+    setCredPopoverUserId(userId);
+    setCredPopoverCredentials([]);
+    setCredPopoverError('');
+    setRevokeError('');
+    setCredPopoverLoading(true);
+    try {
+      const creds = await listAdminUserCredentials(userId);
+      setCredPopoverCredentials(creds);
+    } catch (err) {
+      setCredPopoverError(err instanceof Error ? err.message : 'Failed to load authenticators');
+    } finally {
+      setCredPopoverLoading(false);
+    }
+  }
+
+  async function handleRevokeCredential(userId: string, credentialId: string) {
+    setRevokingCredId(credentialId);
+    setRevokeError('');
+    try {
+      await revokeAdminUserCredential(userId, credentialId);
+      setCredPopoverCredentials((prev) => prev.filter((c) => c.credentialId !== credentialId));
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : 'Failed to revoke authenticator');
+    } finally {
+      setRevokingCredId(null);
     }
   }
 
@@ -235,39 +289,136 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
                       </TableCellLayout>
                     </TableCell>
                     <TableCell>
-                      <Dialog>
-                        <DialogTrigger disableButtonEnhancement>
-                          <Button
-                            appearance="subtle"
-                            icon={<DeleteRegular />}
-                            disabled={deletingId === user.id}
-                            style={{ color: 'var(--colorPaletteRedForeground2)' }}
-                          >
-                            {deletingId === user.id ? 'Deleting...' : 'Delete'}
-                          </Button>
-                        </DialogTrigger>
-                        <DialogSurface>
-                          <DialogBody>
-                            <DialogTitle>Delete user "{user.username}"?</DialogTitle>
-                            <DialogContent>
-                              This will permanently delete the user and all their files and credentials.
-                              This action cannot be undone.
-                            </DialogContent>
-                            <DialogActions>
-                              <DialogTrigger disableButtonEnhancement>
-                                <Button appearance="secondary">Cancel</Button>
-                              </DialogTrigger>
-                              <Button
-                                appearance="primary"
-                                style={{ backgroundColor: 'var(--colorPaletteRedBackground3)' }}
-                                onClick={() => void handleDeleteUser(user.id)}
-                              >
-                                Delete
-                              </Button>
-                            </DialogActions>
-                          </DialogBody>
-                        </DialogSurface>
-                      </Dialog>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        {/* Authenticators popover */}
+                        <Popover
+                          open={credPopoverUserId === user.id}
+                          onOpenChange={(_, data) => {
+                            if (data.open) {
+                              void handleOpenCredentialPopover(user.id);
+                            } else {
+                              setCredPopoverUserId(null);
+                              setCredPopoverCredentials([]);
+                              setCredPopoverError('');
+                              setRevokeError('');
+                            }
+                          }}
+                          positioning="below-start"
+                        >
+                          <PopoverTrigger disableButtonEnhancement>
+                            <Button
+                              appearance="subtle"
+                              icon={<KeyRegular />}
+                              size="small"
+                            >
+                              Authenticators
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverSurface>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '280px', padding: '4px 0' }}>
+                              <Text weight="semibold" size={300}>Authenticators for {user.username}</Text>
+                              {credPopoverLoading && <Spinner size="tiny" label="Loading..." />}
+                              {credPopoverError && (
+                                <Text size={200} style={{ color: 'var(--colorPaletteRedForeground2)' }}>{credPopoverError}</Text>
+                              )}
+                              {revokeError && (
+                                <Text size={200} style={{ color: 'var(--colorPaletteRedForeground2)' }}>{revokeError}</Text>
+                              )}
+                              {!credPopoverLoading && credPopoverCredentials.length === 0 && !credPopoverError && (
+                                <Text size={200} style={{ color: 'var(--colorNeutralForeground3)' }}>No authenticators found.</Text>
+                              )}
+                              {credPopoverCredentials.map((cred) => {
+                                const isOnlyOne = credPopoverCredentials.length === 1;
+                                const isRevoking = revokingCredId === cred.credentialId;
+                                return (
+                                  <div
+                                    key={cred.credentialId}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      gap: '8px',
+                                      padding: '4px 0',
+                                      borderBottom: '1px solid var(--colorNeutralStroke1)',
+                                    }}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      {credentialTypeIcon(cred.transports)}
+                                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                        <Text size={200}>{credentialTypeLabel(cred.transports)}</Text>
+                                        <Text size={100} style={{ color: 'var(--colorNeutralForeground3)' }}>
+                                          Added {formatDate(cred.createdAt)}
+                                        </Text>
+                                      </div>
+                                    </div>
+                                    {isOnlyOne ? (
+                                      <Tooltip
+                                        content="Cannot revoke the last authenticator — delete the user instead"
+                                        relationship="label"
+                                      >
+                                        <Button
+                                          appearance="subtle"
+                                          size="small"
+                                          disabled
+                                          style={{ color: 'var(--colorPaletteRedForeground2)' }}
+                                        >
+                                          Revoke
+                                        </Button>
+                                      </Tooltip>
+                                    ) : (
+                                      <Button
+                                        appearance="subtle"
+                                        size="small"
+                                        disabled={isRevoking}
+                                        style={{ color: 'var(--colorPaletteRedForeground2)' }}
+                                        onClick={() => void handleRevokeCredential(user.id, cred.credentialId)}
+                                      >
+                                        {isRevoking ? 'Revoking...' : 'Revoke'}
+                                      </Button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </PopoverSurface>
+                        </Popover>
+
+                        {/* Delete user dialog */}
+                        <Dialog>
+                          <DialogTrigger disableButtonEnhancement>
+                            <Button
+                              appearance="subtle"
+                              icon={<DeleteRegular />}
+                              size="small"
+                              disabled={deletingId === user.id}
+                              style={{ color: 'var(--colorPaletteRedForeground2)' }}
+                            >
+                              {deletingId === user.id ? 'Deleting...' : 'Delete'}
+                            </Button>
+                          </DialogTrigger>
+                          <DialogSurface>
+                            <DialogBody>
+                              <DialogTitle>Delete user "{user.username}"?</DialogTitle>
+                              <DialogContent>
+                                This will permanently delete the user and all their files and credentials.
+                                This action cannot be undone.
+                              </DialogContent>
+                              <DialogActions>
+                                <DialogTrigger disableButtonEnhancement>
+                                  <Button appearance="secondary">Cancel</Button>
+                                </DialogTrigger>
+                                <Button
+                                  appearance="primary"
+                                  style={{ backgroundColor: 'var(--colorPaletteRedBackground3)' }}
+                                  onClick={() => void handleDeleteUser(user.id)}
+                                >
+                                  Delete
+                                </Button>
+                              </DialogActions>
+                            </DialogBody>
+                          </DialogSurface>
+                        </Dialog>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
