@@ -57,9 +57,9 @@ import {
   WarningRegular,
   KeyRegular,
 } from '@fluentui/react-icons';
-import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential } from '../api';
+import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential, getWrappedKey, storeWrappedKey, startLogin } from '../api';
 import type { FileRecord, CredentialInfo } from '../api';
-import { browserRegister } from '../webauthn';
+import { browserRegister, browserAuthenticate, deriveWrappingKey, wrapMasterKey, unwrapMasterKey } from '../webauthn';
 import { formatFileSize, formatDate } from '../utils';
 import UploadArea from './UploadArea';
 
@@ -406,12 +406,49 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
     setAddCredentialSuccess(false);
     setAddCredentialLoading(true);
     try {
+      // Step 1: Register the new credential
       setAddCredentialStatus('Starting registration...');
       const { options, challengeId } = await startAddCredential();
       setAddCredentialStatus('Touch your authenticator (TouchID, Face ID, or security key)...');
-      const credential = await browserRegister(options);
-      setAddCredentialStatus('Verifying...');
-      await finishAddCredential(credential, challengeId);
+      const newCredential = await browserRegister(options);
+      setAddCredentialStatus('Completing registration...');
+      await finishAddCredential(newCredential, challengeId);
+
+      const newCredentialId = newCredential.id;
+
+      // Step 2: If the current session has a master key, wrap it for the new credential.
+      // This enables the new credential to decrypt any file encrypted with the master key,
+      // regardless of which credential originally uploaded it.
+      if (clientKey) {
+        try {
+          setAddCredentialStatus('Activating shared encryption for the new authenticator — touch your new authenticator again to confirm.');
+          // Get a WebAuthn challenge so we can call navigator.credentials.get() on the new
+          // credential and extract its PRF output. We reuse login/start (with the current user's
+          // username) to obtain a server-generated challenge; we intentionally do NOT call
+          // login/finish afterwards — the session remains unchanged and the orphaned challenge
+          // entry in the DB is harmless (it contains no sensitive data and is never consumed).
+          const { options: loginOptions } = await startLogin(username);
+          const { prfOutput: newPrfOutput } = await browserAuthenticate({
+            ...loginOptions,
+            // Restrict to just the newly registered credential
+            allowCredentials: [{ id: newCredentialId, type: 'public-key' }],
+          });
+
+          if (newPrfOutput) {
+            // Derive a wrapping key from the new credential's PRF and wrap the shared master key
+            const newWrappingKey = await deriveWrappingKey(newPrfOutput);
+            const { wrappedKey, iv } = await wrapMasterKey(clientKey, newWrappingKey);
+            await storeWrappedKey(newCredentialId, wrappedKey, iv);
+          }
+          // If newPrfOutput is null the new credential doesn't support PRF — the credential
+          // is still registered, but cross-credential decryption won't be available for it.
+        } catch {
+          // Key wrapping failed (e.g. user cancelled the second touch) — the credential is
+          // still registered; cross-credential decryption can be set up by signing in with
+          // the new credential and then re-adding it.
+        }
+      }
+
       setAddCredentialSuccess(true);
       setAddCredentialStatus('');
       // Refresh credentials list
@@ -1095,10 +1132,9 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <Text>
                   Register an additional authenticator (e.g. TouchID, Face ID, Windows Hello, or a passkey)
-                  to use for E2E encryption. Files you upload after signing in with this authenticator will be
-                  tagged with the authentication mechanism used and can be decrypted by that authenticator.
-                  Files uploaded with a different authenticator remain accessible via server decryption but
-                  require the original authenticator for client-side E2E decryption.
+                  to share the same encryption key. You will be prompted twice: once to register the
+                  authenticator and once to activate shared encryption. After this, signing in with either
+                  authenticator will give access to all your E2E encrypted files.
                 </Text>
                 {addCredentialSuccess && (
                   <MessageBar intent="success">

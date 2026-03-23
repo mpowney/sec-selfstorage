@@ -296,10 +296,28 @@ export async function listCredentials(): Promise<CredentialInfo[]> {
   return data.credentials;
 }
 
+export async function getWrappedKey(): Promise<{ wrappedKey: string; iv: string } | null> {
+  const res = await fetch('/api/auth/wrapped-key', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to get wrapped key');
+  const data = await res.json() as { wrappedKey: string | null; iv?: string };
+  if (!data.wrappedKey) return null;
+  return { wrappedKey: data.wrappedKey, iv: data.iv as string };
+}
+
 export async function startAddCredential(): Promise<{ options: PublicKeyCredentialCreationOptionsJSON; challengeId: string }> {
   const res = await fetch('/api/auth/add-credential/start', { credentials: 'include' });
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to start adding credential');
   return res.json() as Promise<{ options: PublicKeyCredentialCreationOptionsJSON; challengeId: string }>;
+}
+
+export async function storeWrappedKey(credentialId: string, wrappedKey: string, iv: string): Promise<void> {
+  const res = await fetch('/api/auth/wrapped-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'include',
+    body: JSON.stringify({ credentialId, wrappedKey, iv }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to store wrapped key');
 }
 
 export async function finishAddCredential(

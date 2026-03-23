@@ -16,7 +16,9 @@ const MAGIC_LEN = 4;
 const IV_LEN = 12;
 
 /**
- * Derive a non-extractable AES-256-GCM key from the raw PRF output using HKDF.
+ * Derive an AES-256-GCM key from the raw PRF output using HKDF.
+ * The key is extractable so it can be wrapped (encrypted) for storage and shared
+ * across multiple credentials via the master key scheme.
  */
 export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey> {
   const baseKey = await crypto.subtle.importKey('raw', prfOutput, { name: 'HKDF' }, false, ['deriveKey']);
@@ -29,9 +31,65 @@ export async function deriveClientKey(prfOutput: ArrayBuffer): Promise<CryptoKey
     },
     baseKey,
     { name: 'AES-GCM', length: 256 },
+    true, // extractable so the key can be wrapped for additional credentials
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/**
+ * Derive an AES-256-GCM wrapping key from the raw PRF output using HKDF.
+ * Uses a different HKDF info string from deriveClientKey so the two keys are
+ * cryptographically independent. The wrapping key is used only to encrypt/decrypt
+ * the master key blob stored on the server; it never touches file data directly.
+ */
+export async function deriveWrappingKey(prfOutput: ArrayBuffer): Promise<CryptoKey> {
+  const baseKey = await crypto.subtle.importKey('raw', prfOutput, { name: 'HKDF' }, false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new Uint8Array(0),
+      info: new TextEncoder().encode('sec-selfstorage-key-wrapping-v1'),
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
     false,
     ['encrypt', 'decrypt'],
   );
+}
+
+/**
+ * Encrypt (wrap) a master CryptoKey with a wrapping key.
+ * The master key is exported as raw bytes and then AES-GCM encrypted.
+ * Returns base64url-encoded wrapped key bytes and IV.
+ */
+export async function wrapMasterKey(
+  masterKey: CryptoKey,
+  wrappingKey: CryptoKey,
+): Promise<{ wrappedKey: string; iv: string }> {
+  const rawKey = await crypto.subtle.exportKey('raw', masterKey);
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LEN));
+  const wrapped = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, wrappingKey, rawKey);
+  return {
+    wrappedKey: arrayBufferToBase64url(wrapped),
+    iv: arrayBufferToBase64url(iv.buffer),
+  };
+}
+
+/**
+ * Decrypt (unwrap) a wrapped master key using a wrapping key.
+ * Returns an extractable AES-256-GCM CryptoKey so it can in turn be wrapped for
+ * additional credentials.
+ */
+export async function unwrapMasterKey(
+  wrappedKey: string,
+  iv: string,
+  wrappingKey: CryptoKey,
+): Promise<CryptoKey> {
+  const wrappedBytes = base64urlToArrayBuffer(wrappedKey);
+  const ivBytes = base64urlToArrayBuffer(iv);
+  const rawKey = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, wrappingKey, wrappedBytes);
+  return crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
 }
 
 /**

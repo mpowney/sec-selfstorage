@@ -461,4 +461,66 @@ router.post('/add-credential/finish', requireUserAuth, async (req: Request, res:
   }
 });
 
+// GET /auth/wrapped-key — retrieve the wrapped master key for the current session's credential
+// Returns { wrappedKey, iv } or { wrappedKey: null } if not yet set up.
+router.get('/wrapped-key', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    type Row = { wrapped_key: string; iv: string };
+    const row = db
+      .prepare('SELECT wrapped_key, iv FROM user_wrapped_keys WHERE user_id = ? AND credential_id = ?')
+      .get(req.session.userId, req.session.credentialId) as Row | undefined;
+
+    if (!row) {
+      res.json({ wrappedKey: null });
+      return;
+    }
+    res.json({ wrappedKey: row.wrapped_key, iv: row.iv });
+  } catch (err) {
+    console.error('wrapped-key get error:', err);
+    res.status(500).json({ error: 'Failed to retrieve wrapped key' });
+  }
+});
+
+// POST /auth/wrapped-key — store (or update) the wrapped master key for a credential
+// Body: { credentialId, wrappedKey, iv }
+// The credential must belong to the current authenticated user.
+router.post('/wrapped-key', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const { credentialId, wrappedKey, iv } = req.body as {
+      credentialId?: string;
+      wrappedKey?: string;
+      iv?: string;
+    };
+
+    if (!credentialId || !wrappedKey || !iv) {
+      res.status(400).json({ error: 'Missing required fields: credentialId, wrappedKey, iv' });
+      return;
+    }
+
+    const db = getDb();
+
+    // Verify the target credential belongs to the authenticated user
+    const credRow = db
+      .prepare('SELECT id FROM credentials WHERE credential_id = ? AND user_id = ?')
+      .get(credentialId, req.session.userId) as { id: string } | undefined;
+
+    if (!credRow) {
+      res.status(403).json({ error: 'Credential does not belong to this user' });
+      return;
+    }
+
+    db.prepare(`
+      INSERT INTO user_wrapped_keys (id, user_id, credential_id, wrapped_key, iv, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, credential_id) DO UPDATE SET wrapped_key = excluded.wrapped_key, iv = excluded.iv
+    `).run(uuidv4(), req.session.userId, credentialId, wrappedKey, iv, new Date().toISOString());
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('wrapped-key post error:', err);
+    res.status(500).json({ error: 'Failed to store wrapped key' });
+  }
+});
+
 export default router;

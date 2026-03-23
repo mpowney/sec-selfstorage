@@ -17,8 +17,8 @@ import {
   Spinner,
 } from '@fluentui/react-components';
 import { LockClosedRegular, KeyRegular } from '@fluentui/react-icons';
-import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
-import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
+import { startLogin, finishLogin, startRegistration, finishRegistration, getWrappedKey, storeWrappedKey } from '../api';
+import { browserAuthenticate, browserRegister, deriveClientKey, deriveWrappingKey, wrapMasterKey, unwrapMasterKey } from '../webauthn';
 
 const useStyles = makeStyles({
   root: {
@@ -103,7 +103,35 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       const { response: credential, prfOutput } = await browserAuthenticate(options);
       setSignInStatus('Verifying...');
       const result = await finishLogin(credential, challengeId, !!prfOutput);
-      const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
+
+      let clientKey: CryptoKey | null = null;
+      if (prfOutput) {
+        // Derive the per-credential wrapping key and the legacy per-credential encryption key
+        // from the PRF output (different HKDF info strings → independent keys).
+        const wrappingKey = await deriveWrappingKey(prfOutput);
+        const prfDerivedKey = await deriveClientKey(prfOutput);
+
+        try {
+          // Try to fetch the stored master key wrapped for this credential.
+          // The master key is the same for all credentials belonging to this user,
+          // enabling cross-credential E2E decryption.
+          const wrappedKeyData = await getWrappedKey();
+          if (wrappedKeyData) {
+            // Unwrap the master key using this credential's wrapping key
+            clientKey = await unwrapMasterKey(wrappedKeyData.wrappedKey, wrappedKeyData.iv, wrappingKey);
+          } else {
+            // First time with this credential — the PRF-derived key becomes the master key.
+            // Wrap it and store so future logins (and additional credentials) can retrieve it.
+            clientKey = prfDerivedKey;
+            const { wrappedKey, iv } = await wrapMasterKey(clientKey, wrappingKey);
+            await storeWrappedKey(result.credentialId, wrappedKey, iv);
+          }
+        } catch {
+          // Key management failed (e.g. network error) — fall back to PRF-derived key
+          clientKey = prfDerivedKey;
+        }
+      }
+
       onLogin(result.userId, result.username, result.credentialId, clientKey);
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : 'Sign in failed');
