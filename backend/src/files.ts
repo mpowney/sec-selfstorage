@@ -259,8 +259,10 @@ router.delete('/:id', (req: Request, res: Response) => {
       return;
     }
 
-    const cleanResult = db
-      .prepare('PRAGMA wal_checkpoint(TRUNCATE); VACUUM;')
+    db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
+      .run();
+
+    db.prepare('VACUUM')
       .run();
 
     res.json({ success: true });
