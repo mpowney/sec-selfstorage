@@ -1160,7 +1160,7 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
         </DialogSurface>
       </Dialog>
 
-      {/* Add Authenticator Dialog */}
+      {/* Register Authenticator Dialog */}
       <Dialog
         open={addCredentialOpen}
         onOpenChange={(_, data) => {
@@ -1175,7 +1175,7 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
       >
         <DialogSurface>
           <DialogBody>
-            <DialogTitle>Add authenticator</DialogTitle>
+            <DialogTitle>Register authenticator</DialogTitle>
             <DialogContent>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 <Text>
@@ -1232,7 +1232,7 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                   onClick={() => void handleAddCredential()}
                   disabled={addCredentialLoading}
                 >
-                  {addCredentialLoading ? 'Registering...' : 'Register authenticator'}
+                  {addCredentialLoading ? 'Registering...' : 'Register'}
                 </Button>
               )}
             </DialogActions>
