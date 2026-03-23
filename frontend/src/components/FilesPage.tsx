@@ -57,7 +57,7 @@ import {
   WarningRegular,
   KeyRegular,
 } from '@fluentui/react-icons';
-import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential, getWrappedKey, storeWrappedKey, startLogin, updateCredentialName } from '../api';
+import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential, getWrappedKey, storeWrappedKey, startLogin, updateCredentialName, revokeCredential } from '../api';
 import type { FileRecord, CredentialInfo } from '../api';
 import { browserRegister, browserAuthenticate, deriveWrappingKey, wrapMasterKey, unwrapMasterKey, clientEncryptFile, clientDecryptFile, arrayBufferToBase64url, base64urlToArrayBuffer } from '../webauthn';
 import { formatFileSize, formatDate } from '../utils';
@@ -363,6 +363,11 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   const [addCredentialSuccess, setAddCredentialSuccess] = useState(false);
   const [addCredentialLoading, setAddCredentialLoading] = useState(false);
 
+  // Revoke-credential state
+  const [revokeTargetCredId, setRevokeTargetCredId] = useState<string | null>(null);
+  const [revokeLoading, setRevokeLoading] = useState(false);
+  const [revokeError, setRevokeError] = useState('');
+
   const loadFiles = useCallback(async (folder: string) => {
     setFilesLoading(true);
     setFilesError('');
@@ -417,6 +422,21 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   async function handleLogout() {
     await logout();
     onLogout();
+  }
+
+  async function handleRevokeCredential() {
+    if (!revokeTargetCredId) return;
+    setRevokeLoading(true);
+    setRevokeError('');
+    try {
+      await revokeCredential(revokeTargetCredId);
+      setCredentials((prev) => prev.filter((c) => c.credentialId !== revokeTargetCredId));
+      setRevokeTargetCredId(null);
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : 'Failed to revoke authenticator');
+    } finally {
+      setRevokeLoading(false);
+    }
   }
 
   async function handleAddCredential() {
@@ -669,9 +689,21 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                       return (
                         <div key={cred.credentialId} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           {isPlatform || isHybrid ? <PhoneRegular fontSize={14} /> : <KeyRegular fontSize={14} />}
-                          <Text size={200}>{displayName ? displayName : label}</Text>
-                          {isCurrentSession && (
+                          <Text size={200} style={{ flex: 1 }}>{displayName ?? label}</Text>
+                          {isCurrentSession ? (
                             <Badge appearance="tint" color="brand" size="small">current</Badge>
+                          ) : (
+                            <Button
+                              appearance="subtle"
+                              size="small"
+                              style={{ color: 'var(--colorPaletteRedForeground2)', padding: '0 4px', minWidth: 0 }}
+                              onClick={() => {
+                                setRevokeTargetCredId(cred.credentialId);
+                                setRevokeError('');
+                              }}
+                            >
+                              Revoke
+                            </Button>
                           )}
                         </div>
                       );
@@ -1235,6 +1267,64 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                   {addCredentialLoading ? 'Registering...' : 'Register'}
                 </Button>
               )}
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+
+      {/* Revoke Authenticator Confirmation Dialog */}
+      <Dialog
+        open={revokeTargetCredId !== null}
+        onOpenChange={(_, data) => {
+          if (!data.open) {
+            setRevokeTargetCredId(null);
+            setRevokeError('');
+          }
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Revoke authenticator?</DialogTitle>
+            <DialogContent>
+              {(() => {
+                const cred = credentials.find((c) => c.credentialId === revokeTargetCredId);
+                if (!cred) return null;
+                const label = decryptedCredentialNames[cred.credentialId] ?? credentialTransportLabel(cred.transports);
+                return (
+                  <>
+                    <Text>
+                      Remove <strong>{label}</strong> (registered {formatDate(cred.createdAt)}) from your account?
+                      You will no longer be able to sign in with it.
+                    </Text>
+                    {revokeError && (
+                      <MessageBar intent="error" style={{ marginTop: '12px' }}>
+                        <MessageBarBody>{revokeError}</MessageBarBody>
+                      </MessageBar>
+                    )}
+                  </>
+                );
+              })()}
+            </DialogContent>
+            <DialogActions>
+              <Button
+                appearance="secondary"
+                disabled={revokeLoading}
+                onClick={() => {
+                  setRevokeTargetCredId(null);
+                  setRevokeError('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                appearance="primary"
+                style={{ backgroundColor: 'var(--colorPaletteRedBackground3)' }}
+                disabled={revokeLoading}
+                icon={revokeLoading ? <Spinner size="tiny" /> : undefined}
+                onClick={() => void handleRevokeCredential()}
+              >
+                {revokeLoading ? 'Revoking...' : 'Revoke'}
+              </Button>
             </DialogActions>
           </DialogBody>
         </DialogSurface>

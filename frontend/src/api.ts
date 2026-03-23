@@ -343,6 +343,15 @@ export async function updateCredentialName(credentialId: string, nameEncrypted: 
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to update credential name');
 }
 
+export async function revokeCredential(credentialId: string): Promise<void> {
+  const res = await fetch(`/api/auth/credentials/${encodeURIComponent(credentialId)}`, {
+    method: 'DELETE',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to revoke credential');
+}
+
 // Admin credential management API
 
 export interface AdminCredential {

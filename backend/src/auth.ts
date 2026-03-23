@@ -357,6 +357,53 @@ router.get('/credentials', requireUserAuth, (req: Request, res: Response) => {
   }
 });
 
+// DELETE /auth/credentials/:credentialId — revoke one of the user's own authenticators.
+// The credential being revoked must not be the one used for the current session.
+// The user must have at least one other credential remaining after revocation.
+router.delete('/credentials/:credentialId', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const { credentialId } = req.params;
+    const db = getDb();
+
+    // Reject self-revocation (cannot revoke the credential used for the current session)
+    if (credentialId === req.session.credentialId) {
+      res.status(400).json({ error: 'Cannot revoke the authenticator used for the current session' });
+      return;
+    }
+
+    // Verify the credential belongs to the authenticated user
+    const credRow = db
+      .prepare('SELECT id FROM credentials WHERE credential_id = ? AND user_id = ?')
+      .get(credentialId, req.session.userId) as { id: string } | undefined;
+
+    if (!credRow) {
+      res.status(404).json({ error: 'Credential not found' });
+      return;
+    }
+
+    // Ensure the user has more than one credential (cannot delete the last one)
+    const count = (
+      db.prepare('SELECT COUNT(*) AS cnt FROM credentials WHERE user_id = ?').get(req.session.userId) as { cnt: number }
+    ).cnt;
+
+    if (count <= 1) {
+      res.status(400).json({ error: 'Cannot revoke the last authenticator. Delete your account instead.' });
+      return;
+    }
+
+    // Remove the credential and its wrapped key entry atomically
+    db.transaction(() => {
+      db.prepare('DELETE FROM user_wrapped_keys WHERE user_id = ? AND credential_id = ?').run(req.session.userId, credentialId);
+      db.prepare('DELETE FROM credentials WHERE credential_id = ? AND user_id = ?').run(credentialId, req.session.userId);
+    })();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('credentials revoke error:', err);
+    res.status(500).json({ error: 'Failed to revoke credential' });
+  }
+});
+
 // PATCH /auth/credentials/:credentialId/name — update the encrypted display name for an authenticator
 router.patch('/credentials/:credentialId/name', requireUserAuth, (req: Request, res: Response) => {
   try {
