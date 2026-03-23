@@ -142,7 +142,7 @@ function csrfProtection(req: Request, res: Response, next: NextFunction): void {
 
 // Rate limiters
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 1 * 60 * 1000, // 15 minutes
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,

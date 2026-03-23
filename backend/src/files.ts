@@ -37,11 +37,12 @@ router.get('/', (req: Request, res: Response) => {
       uploaded_at: string;
       folder_path: string;
       client_encrypted: number;
+      auth_mechanisms: string;
     };
 
     const rows = db
       .prepare(
-        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path, client_encrypted
+        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path, client_encrypted, auth_mechanisms
          FROM files WHERE user_id = ? AND folder_path = ? ORDER BY uploaded_at DESC`,
       )
       .all(req.session.userId, folder) as FileRow[];
@@ -58,6 +59,7 @@ router.get('/', (req: Request, res: Response) => {
       uploadedAt: r.uploaded_at,
       folderPath: r.folder_path,
       clientEncrypted: r.client_encrypted === 1,
+      authMechanisms: r.auth_mechanisms ?? 'server',
     }));
 
     // Derive immediate subfolders under the current folder
@@ -135,13 +137,36 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
     // A client-encrypted upload sends mimeType as a separate body field
     const isClientEncrypted = typeof bodyMimeType === 'string' && bodyMimeType.length > 0;
 
+    // Determine the auth mechanism tag from the credential's transport types
+    let authMechanisms = 'server';
+    if (isClientEncrypted) {
+      type TransportRow = { transports: string };
+      const transportRow = db
+        .prepare('SELECT transports FROM credentials WHERE credential_id = ?')
+        .get(credentialId) as TransportRow | undefined;
+      if (transportRow) {
+        const transports = JSON.parse(transportRow.transports) as string[];
+        if (transports.includes('internal')) {
+          authMechanisms = 'e2e-platform';
+        } else if (transports.includes('hybrid')) {
+          authMechanisms = 'e2e-hybrid';
+        } else if (transports.some((t) => ['usb', 'nfc', 'ble', 'smart-card'].includes(t))) {
+          authMechanisms = 'e2e-roaming';
+        } else {
+          authMechanisms = 'e2e-unknown';
+        }
+      } else {
+        authMechanisms = 'e2e-unknown';
+      }
+    }
+
     const fileId = uuidv4();
     const { encrypted, iv, authTag } = encryptFile(req.file.buffer, fileId, credentialId);
 
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO files (id, user_id, credential_id, filename, mime_type, size, encrypted_data, iv, auth_tag, uploaded_at, folder_path, client_encrypted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO files (id, user_id, credential_id, filename, mime_type, size, encrypted_data, iv, auth_tag, uploaded_at, folder_path, client_encrypted, auth_mechanisms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       fileId,
       req.session.userId,
@@ -155,6 +180,7 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       now,
       resolvedFolderPath,
       isClientEncrypted ? 1 : 0,
+      authMechanisms,
     );
 
     const fileRecord: FileRecord = {
@@ -169,6 +195,7 @@ router.post('/upload', upload.single('file'), (req: Request, res: Response) => {
       uploadedAt: now,
       folderPath: resolvedFolderPath,
       clientEncrypted: isClientEncrypted,
+      authMechanisms,
     };
 
     res.status(201).json(fileRecord);
@@ -232,6 +259,12 @@ router.delete('/:id', (req: Request, res: Response) => {
       return;
     }
 
+    db.prepare('PRAGMA wal_checkpoint(TRUNCATE)')
+      .run();
+
+    db.prepare('VACUUM')
+      .run();
+
     res.json({ success: true });
   } catch (err) {
     console.error('file delete error:', err);
@@ -256,11 +289,12 @@ router.get('/:id/info', (req: Request, res: Response) => {
       uploaded_at: string;
       folder_path: string;
       client_encrypted: number;
+      auth_mechanisms: string;
     };
 
     const row = db
       .prepare(
-        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path, client_encrypted
+        `SELECT id, user_id, credential_id, filename, mime_type, size, iv, auth_tag, uploaded_at, folder_path, client_encrypted, auth_mechanisms
          FROM files WHERE id = ? AND user_id = ?`,
       )
       .get(req.params['id'], req.session.userId) as FileRow | undefined;
@@ -282,6 +316,7 @@ router.get('/:id/info', (req: Request, res: Response) => {
       uploadedAt: row.uploaded_at,
       folderPath: row.folder_path,
       clientEncrypted: row.client_encrypted === 1,
+      authMechanisms: row.auth_mechanisms ?? 'server',
     };
 
     res.json(fileRecord);

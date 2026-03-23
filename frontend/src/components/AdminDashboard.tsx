@@ -23,10 +23,11 @@ import {
   TableHeader,
   TableHeaderCell,
   TableRow,
+  Tooltip,
 } from '@fluentui/react-components';
-import { SignOutRegular, DeleteRegular, ShieldKeyholeRegular, LockClosedRegular } from '@fluentui/react-icons';
-import { listAdminUsers, deleteAdminUser, adminLogout } from '../api';
-import type { AdminUser } from '../api';
+import { SignOutRegular, DeleteRegular, ShieldKeyholeRegular, LockClosedRegular, KeyRegular, PhoneRegular, DismissRegular, WarningRegular } from '@fluentui/react-icons';
+import { listAdminUsers, deleteAdminUser, adminLogout, listAdminUserCredentials, revokeAdminUserCredential } from '../api';
+import type { AdminUser, AdminCredential } from '../api';
 import { formatDate } from '../utils';
 
 const useStyles = makeStyles({
@@ -86,11 +87,59 @@ const useStyles = makeStyles({
     textAlign: 'center',
     color: tokens.colorNeutralForeground3,
   },
+  actionsCell: {
+    whiteSpace: 'nowrap',
+    minWidth: '200px',
+  },
+  credentialRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '12px',
+    padding: '10px 0',
+    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+  credentialInfo: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+  },
+  credentialMeta: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
+  confirmBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    padding: '12px',
+    backgroundColor: tokens.colorPaletteRedBackground1,
+    borderRadius: tokens.borderRadiusMedium,
+    border: `1px solid ${tokens.colorPaletteRedBorder1}`,
+  },
+  confirmActions: {
+    display: 'flex',
+    gap: '8px',
+  },
 });
 
 interface AdminDashboardProps {
   adminUsername: string;
   onLogout: () => void;
+}
+
+/** Returns a short display label for an authenticator based on its WebAuthn transports. */
+function credentialTypeLabel(transports: string[]): string {
+  if (transports.includes('internal')) return 'Platform authenticator';
+  if (transports.includes('hybrid')) return 'Passkey (hybrid)';
+  return 'Security key';
+}
+
+/** Returns the icon for an authenticator type. */
+function credentialTypeIcon(transports: string[]): React.ReactElement {
+  if (transports.includes('internal') || transports.includes('hybrid')) return <PhoneRegular fontSize={16} />;
+  return <KeyRegular fontSize={16} />;
 }
 
 export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboardProps) {
@@ -100,6 +149,17 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState('');
+
+  // Authenticators dialog state
+  const [credDialogOpen, setCredDialogOpen] = useState(false);
+  const [credDialogUser, setCredDialogUser] = useState<AdminUser | null>(null);
+  const [credDialogCredentials, setCredDialogCredentials] = useState<AdminCredential[]>([]);
+  const [credDialogLoading, setCredDialogLoading] = useState(false);
+  const [credDialogError, setCredDialogError] = useState('');
+  // Revoke confirmation state (credentialId being confirmed, or null)
+  const [pendingRevokeCredId, setPendingRevokeCredId] = useState<string | null>(null);
+  const [revokingCredId, setRevokingCredId] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState('');
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -135,6 +195,50 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
       setDeletingId(null);
     }
   }
+
+  async function handleOpenCredentialDialog(user: AdminUser) {
+    setCredDialogUser(user);
+    setCredDialogCredentials([]);
+    setCredDialogError('');
+    setRevokeError('');
+    setPendingRevokeCredId(null);
+    setCredDialogLoading(true);
+    setCredDialogOpen(true);
+    try {
+      const creds = await listAdminUserCredentials(user.id);
+      setCredDialogCredentials(creds);
+    } catch (err) {
+      setCredDialogError(err instanceof Error ? err.message : 'Failed to load authenticators');
+    } finally {
+      setCredDialogLoading(false);
+    }
+  }
+
+  function handleCloseCredentialDialog() {
+    setCredDialogOpen(false);
+    setCredDialogUser(null);
+    setCredDialogCredentials([]);
+    setCredDialogError('');
+    setRevokeError('');
+    setPendingRevokeCredId(null);
+  }
+
+  async function handleConfirmRevoke() {
+    if (!credDialogUser || !pendingRevokeCredId) return;
+    setRevokingCredId(pendingRevokeCredId);
+    setRevokeError('');
+    try {
+      await revokeAdminUserCredential(credDialogUser.id, pendingRevokeCredId);
+      setCredDialogCredentials((prev) => prev.filter((c) => c.credentialId !== pendingRevokeCredId));
+      setPendingRevokeCredId(null);
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : 'Failed to revoke authenticator');
+    } finally {
+      setRevokingCredId(null);
+    }
+  }
+
+  const pendingRevokeCred = credDialogCredentials.find((c) => c.credentialId === pendingRevokeCredId);
 
   return (
     <div className={styles.root}>
@@ -189,7 +293,6 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
               <TableHeader>
                 <TableRow>
                   <TableHeaderCell>Username</TableHeaderCell>
-                  <TableHeaderCell>Display Name</TableHeaderCell>
                   <TableHeaderCell>Created</TableHeaderCell>
                   <TableHeaderCell>Last Login</TableHeaderCell>
                   <TableHeaderCell>E2E Encrypted</TableHeaderCell>
@@ -201,9 +304,6 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
                   <TableRow key={user.id}>
                     <TableCell>
                       <TableCellLayout>{user.username}</TableCellLayout>
-                    </TableCell>
-                    <TableCell>
-                      <TableCellLayout>{user.displayName}</TableCellLayout>
                     </TableCell>
                     <TableCell>
                       <TableCellLayout>
@@ -234,40 +334,54 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
                         )}
                       </TableCellLayout>
                     </TableCell>
-                    <TableCell>
-                      <Dialog>
-                        <DialogTrigger disableButtonEnhancement>
-                          <Button
-                            appearance="subtle"
-                            icon={<DeleteRegular />}
-                            disabled={deletingId === user.id}
-                            style={{ color: 'var(--colorPaletteRedForeground2)' }}
-                          >
-                            {deletingId === user.id ? 'Deleting...' : 'Delete'}
-                          </Button>
-                        </DialogTrigger>
-                        <DialogSurface>
-                          <DialogBody>
-                            <DialogTitle>Delete user "{user.username}"?</DialogTitle>
-                            <DialogContent>
-                              This will permanently delete the user and all their files and credentials.
-                              This action cannot be undone.
-                            </DialogContent>
-                            <DialogActions>
-                              <DialogTrigger disableButtonEnhancement>
-                                <Button appearance="secondary">Cancel</Button>
-                              </DialogTrigger>
-                              <Button
-                                appearance="primary"
-                                style={{ backgroundColor: 'var(--colorPaletteRedBackground3)' }}
-                                onClick={() => void handleDeleteUser(user.id)}
-                              >
-                                Delete
-                              </Button>
-                            </DialogActions>
-                          </DialogBody>
-                        </DialogSurface>
-                      </Dialog>
+                    <TableCell className={styles.actionsCell}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {/* Authenticators dialog trigger */}
+                        <Button
+                          appearance="subtle"
+                          icon={<KeyRegular />}
+                          size="small"
+                          onClick={() => void handleOpenCredentialDialog(user)}
+                        >
+                          Authenticators
+                        </Button>
+
+                        {/* Delete user dialog */}
+                        <Dialog>
+                          <DialogTrigger disableButtonEnhancement>
+                            <Button
+                              appearance="subtle"
+                              icon={<DeleteRegular />}
+                              size="small"
+                              disabled={deletingId === user.id}
+                              style={{ color: 'var(--colorPaletteRedForeground2)' }}
+                            >
+                              {deletingId === user.id ? 'Deleting...' : 'Delete'}
+                            </Button>
+                          </DialogTrigger>
+                          <DialogSurface>
+                            <DialogBody>
+                              <DialogTitle>Delete user "{user.username}"?</DialogTitle>
+                              <DialogContent>
+                                This will permanently delete the user and all their files and credentials.
+                                This action cannot be undone.
+                              </DialogContent>
+                              <DialogActions>
+                                <DialogTrigger disableButtonEnhancement>
+                                  <Button appearance="secondary">Cancel</Button>
+                                </DialogTrigger>
+                                <Button
+                                  appearance="primary"
+                                  style={{ backgroundColor: 'var(--colorPaletteRedBackground3)' }}
+                                  onClick={() => void handleDeleteUser(user.id)}
+                                >
+                                  Delete
+                                </Button>
+                              </DialogActions>
+                            </DialogBody>
+                          </DialogSurface>
+                        </Dialog>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -276,6 +390,135 @@ export default function AdminDashboard({ adminUsername, onLogout }: AdminDashboa
           )}
         </div>
       </main>
+
+      {/* Authenticators modal dialog */}
+      <Dialog
+        open={credDialogOpen}
+        onOpenChange={(_, data) => {
+          if (!data.open) handleCloseCredentialDialog();
+        }}
+      >
+        <DialogSurface style={{ maxWidth: '480px', width: '100%' }}>
+          <DialogBody>
+            <DialogTitle
+              action={
+                <Button
+                  appearance="subtle"
+                  aria-label="Close"
+                  icon={<DismissRegular />}
+                  onClick={handleCloseCredentialDialog}
+                />
+              }
+            >
+              Authenticators{credDialogUser ? ` — ${credDialogUser.username}` : ''}
+            </DialogTitle>
+
+            <DialogContent>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {credDialogLoading && <Spinner size="small" label="Loading authenticators..." />}
+
+                {credDialogError && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>{credDialogError}</MessageBarBody>
+                  </MessageBar>
+                )}
+
+                {revokeError && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>{revokeError}</MessageBarBody>
+                  </MessageBar>
+                )}
+
+                {!credDialogLoading && credDialogCredentials.length === 0 && !credDialogError && (
+                  <Text style={{ color: 'var(--colorNeutralForeground3)' }}>No authenticators found.</Text>
+                )}
+
+                {credDialogCredentials.map((cred) => {
+                  const isOnlyOne = credDialogCredentials.length === 1;
+                  const isRevoking = revokingCredId === cred.credentialId;
+                  const isPendingRevoke = pendingRevokeCredId === cred.credentialId;
+
+                  return (
+                    <div key={cred.credentialId}>
+                      <div className={styles.credentialRow}>
+                        <div className={styles.credentialInfo}>
+                          {credentialTypeIcon(cred.transports)}
+                          <div className={styles.credentialMeta}>
+                            <Text size={300} weight="semibold">{credentialTypeLabel(cred.transports)}</Text>
+                            <Text size={200} style={{ color: 'var(--colorNeutralForeground3)' }}>
+                              Added {formatDate(cred.createdAt)}
+                            </Text>
+                          </div>
+                        </div>
+
+                        {isOnlyOne ? (
+                          <Tooltip
+                            content="Cannot revoke the last authenticator — delete the user instead"
+                            relationship="label"
+                          >
+                            <Button appearance="subtle" size="small" disabled>
+                              Revoke
+                            </Button>
+                          </Tooltip>
+                        ) : (
+                          <Button
+                            appearance="subtle"
+                            size="small"
+                            disabled={isRevoking || !!pendingRevokeCredId}
+                            style={{ color: 'var(--colorPaletteRedForeground2)' }}
+                            onClick={() => setPendingRevokeCredId(cred.credentialId)}
+                          >
+                            {isRevoking ? 'Revoking...' : 'Revoke'}
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Inline revoke confirmation */}
+                      {isPendingRevoke && pendingRevokeCred && (
+                        <div className={styles.confirmBox}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <WarningRegular style={{ color: 'var(--colorPaletteRedForeground2)', flexShrink: 0 }} />
+                            <Text size={200}>
+                              Revoke the <strong>{credentialTypeLabel(pendingRevokeCred.transports)}</strong> added on{' '}
+                              {formatDate(pendingRevokeCred.createdAt)}? The user will no longer be able to sign in with it.
+                            </Text>
+                          </div>
+                          <div className={styles.confirmActions}>
+                            <Button
+                              appearance="primary"
+                              size="small"
+                              style={{ backgroundColor: 'var(--colorPaletteRedBackground3)' }}
+                              disabled={isRevoking}
+                              icon={isRevoking ? <Spinner size="tiny" /> : undefined}
+                              onClick={() => void handleConfirmRevoke()}
+                            >
+                              {isRevoking ? 'Revoking...' : 'Confirm revoke'}
+                            </Button>
+                            <Button
+                              appearance="secondary"
+                              size="small"
+                              disabled={isRevoking}
+                              onClick={() => setPendingRevokeCredId(null)}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </DialogContent>
+
+            <DialogActions>
+              <Button appearance="secondary" onClick={handleCloseCredentialDialog}>
+                Close
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
     </div>
   );
 }

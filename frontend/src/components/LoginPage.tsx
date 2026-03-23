@@ -17,8 +17,8 @@ import {
   Spinner,
 } from '@fluentui/react-components';
 import { LockClosedRegular, KeyRegular } from '@fluentui/react-icons';
-import { startLogin, finishLogin, startRegistration, finishRegistration } from '../api';
-import { browserAuthenticate, browserRegister, deriveClientKey } from '../webauthn';
+import { startLogin, finishLogin, startRegistration, finishRegistration, getWrappedKey, storeWrappedKey } from '../api';
+import { browserAuthenticate, browserRegister, deriveClientKey, deriveWrappingKey, wrapMasterKey, unwrapMasterKey } from '../webauthn';
 
 const useStyles = makeStyles({
   root: {
@@ -84,7 +84,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   // Register state
   const [regUsername, setRegUsername] = useState('');
-  const [regDisplayName, setRegDisplayName] = useState('');
   const [regLoading, setRegLoading] = useState(false);
   const [regStatus, setRegStatus] = useState('');
   const [regError, setRegError] = useState('');
@@ -99,11 +98,39 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     try {
       setSignInStatus('Starting authentication...');
       const { options, challengeId } = await startLogin(signInUsername.trim());
-      setSignInStatus('Touch your YubiKey...');
+      setSignInStatus('Touch your authenticator...');
       const { response: credential, prfOutput } = await browserAuthenticate(options);
       setSignInStatus('Verifying...');
       const result = await finishLogin(credential, challengeId, !!prfOutput);
-      const clientKey = prfOutput ? await deriveClientKey(prfOutput) : null;
+
+      let clientKey: CryptoKey | null = null;
+      if (prfOutput) {
+        // Derive the per-credential wrapping key and the legacy per-credential encryption key
+        // from the PRF output (different HKDF info strings → independent keys).
+        const wrappingKey = await deriveWrappingKey(prfOutput);
+        const prfDerivedKey = await deriveClientKey(prfOutput);
+
+        try {
+          // Try to fetch the stored master key wrapped for this credential.
+          // The master key is the same for all credentials belonging to this user,
+          // enabling cross-credential E2E decryption.
+          const wrappedKeyData = await getWrappedKey();
+          if (wrappedKeyData) {
+            // Unwrap the master key using this credential's wrapping key
+            clientKey = await unwrapMasterKey(wrappedKeyData.wrappedKey, wrappedKeyData.iv, wrappingKey);
+          } else {
+            // First time with this credential — the PRF-derived key becomes the master key.
+            // Wrap it and store so future logins (and additional credentials) can retrieve it.
+            clientKey = prfDerivedKey;
+            const { wrappedKey, iv } = await wrapMasterKey(clientKey, wrappingKey);
+            await storeWrappedKey(result.credentialId, wrappedKey, iv);
+          }
+        } catch {
+          // Key management failed (e.g. network error) — fall back to PRF-derived key
+          clientKey = prfDerivedKey;
+        }
+      }
+
       onLogin(result.userId, result.username, result.credentialId, clientKey);
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : 'Sign in failed');
@@ -123,14 +150,13 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     try {
       setRegStatus('Starting registration...');
       const { options, challengeId } = await startRegistration(regUsername.trim());
-      setRegStatus('Touch your YubiKey to register...');
+      setRegStatus('Touch your authenticator to register...');
       const credential = await browserRegister(options);
       setRegStatus('Finishing registration...');
-      await finishRegistration(credential, challengeId, regUsername.trim(), regDisplayName.trim() || regUsername.trim());
+      await finishRegistration(credential, challengeId, regUsername.trim());
       setRegSuccess(true);
       setRegStatus('');
       setRegUsername('');
-      setRegDisplayName('');
     } catch (err) {
       setRegError(err instanceof Error ? err.message : 'Registration failed');
       setRegStatus('');
@@ -192,7 +218,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={signInLoading || !signInUsername.trim()}
               className={styles.submitButton}
             >
-              {signInLoading ? 'Authenticating...' : 'Sign in with YubiKey'}
+              {signInLoading ? 'Authenticating...' : 'Sign in with authenticator'}
             </Button>
           </form>
         )}
@@ -202,7 +228,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             {regSuccess && (
               <MessageBar intent="success">
                 <MessageBarBody>
-                  YubiKey registered successfully! Switch to the Sign In tab to log in.
+                  Authenticator registered successfully! Switch to the Sign In tab to log in.
                 </MessageBarBody>
               </MessageBar>
             )}
@@ -215,16 +241,6 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 disabled={regLoading}
                 autoComplete="username"
                 autoCapitalize="none"
-              />
-            </Field>
-
-            <Field label="Display name">
-              <Input
-                value={regDisplayName}
-                onChange={(_, d) => setRegDisplayName(d.value)}
-                placeholder="Your display name (optional)"
-                disabled={regLoading}
-                autoComplete="name"
               />
             </Field>
 
@@ -248,11 +264,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               disabled={regLoading || !regUsername.trim()}
               className={styles.submitButton}
             >
-              {regLoading ? 'Registering...' : 'Register YubiKey'}
+              {regLoading ? 'Registering...' : 'Register authenticator'}
             </Button>
 
             <Text size={200} style={{ color: 'var(--colorNeutralForeground3)' }}>
-              Insert your YubiKey before clicking Register.
+              Insert a security key or use a platform authenticator (Touch ID, Face ID, Windows Hello).
             </Text>
           </form>
         )}

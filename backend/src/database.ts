@@ -20,7 +20,6 @@ export function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
-      display_name TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
 
@@ -64,6 +63,17 @@ export function getDb(): Database.Database {
       password_hash TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS user_wrapped_keys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      credential_id TEXT NOT NULL,
+      wrapped_key TEXT NOT NULL,
+      iv TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, credential_id),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
   `);
 
   const tableInfo = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
@@ -78,6 +88,22 @@ export function getDb(): Database.Database {
     db.exec('ALTER TABLE files ADD COLUMN client_encrypted INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Migration: add auth_mechanisms column to existing databases
+  // Stores the authentication mechanisms active at upload time, e.g. "server", "e2e-roaming",
+  // "e2e-platform", "e2e-hybrid", or "e2e-unknown".
+  if (!tableInfo.some((col) => col.name === 'auth_mechanisms')) {
+    db.exec("ALTER TABLE files ADD COLUMN auth_mechanisms TEXT NOT NULL DEFAULT 'server'");
+    // Back-fill: existing client-encrypted rows get "e2e-unknown" since we don't know the transport
+    db.exec("UPDATE files SET auth_mechanisms = 'e2e-unknown' WHERE client_encrypted = 1");
+  }
+
+  const credentialsTableInfo = db.prepare('PRAGMA table_info(credentials)').all() as Array<{ name: string }>;
+
+  // Migration: add name_encrypted column to credentials (stores E2E-encrypted authenticator name)
+  if (!credentialsTableInfo.some((col) => col.name === 'name_encrypted')) {
+    db.exec('ALTER TABLE credentials ADD COLUMN name_encrypted TEXT');
+  }
+
   const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
 
   // Migration: add last_login_at column to existing databases
@@ -88,6 +114,20 @@ export function getDb(): Database.Database {
   // Migration: add last_login_e2e column to existing databases
   if (!usersTableInfo.some((col) => col.name === 'last_login_e2e')) {
     db.exec('ALTER TABLE users ADD COLUMN last_login_e2e INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Migration: drop display_name column from users (no longer used)
+  if (usersTableInfo.some((col) => col.name === 'display_name')) {
+    try {
+      db.exec('ALTER TABLE users DROP COLUMN display_name');
+    } catch (err) {
+      // Older SQLite versions (< 3.35) do not support DROP COLUMN — the column becomes
+      // unused but the database remains functional. Log other unexpected errors.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('no such column') && !msg.includes('syntax error')) {
+        console.warn('Could not drop display_name column (SQLite may be too old):', msg);
+      }
+    }
   }
 
   return db;

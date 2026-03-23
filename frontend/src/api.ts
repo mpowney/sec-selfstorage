@@ -41,6 +41,8 @@ export interface FileRecord {
   uploadedAt: string;
   folderPath: string;
   clientEncrypted: boolean;
+  /** Authentication mechanisms active at upload time: "server", "e2e-roaming", "e2e-platform", "e2e-hybrid", "e2e-unknown" */
+  authMechanisms: string;
 }
 
 // CSRF token cache — fetched once per page load
@@ -80,13 +82,12 @@ export async function finishRegistration(
   credential: RegistrationResponseJSON,
   challengeId: string,
   username: string,
-  displayName: string,
 ): Promise<{ success: boolean }> {
   const res = await fetch('/api/auth/register/finish', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
     credentials: 'include',
-    body: JSON.stringify({ response: credential, challengeId, username, displayName }),
+    body: JSON.stringify({ response: credential, challengeId, username }),
   });
   if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Registration finish failed');
   return res.json() as Promise<{ success: boolean }>;
@@ -227,7 +228,6 @@ export async function deleteFile(fileId: string): Promise<void> {
 export interface AdminUser {
   id: string;
   username: string;
-  displayName: string;
   createdAt: string;
   lastLoginAt: string | null;
   lastLoginE2e: boolean;
@@ -277,4 +277,100 @@ export async function deleteAdminUser(userId: string): Promise<void> {
     credentials: 'include',
   });
   if (!res.ok) throw new Error('Failed to delete user');
+}
+
+// Credential management API
+
+export interface CredentialInfo {
+  credentialId: string;
+  transports: string[];
+  createdAt: string;
+  nameEncrypted: string | null;
+}
+
+export async function listCredentials(): Promise<CredentialInfo[]> {
+  const res = await fetch('/api/auth/credentials', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to list credentials');
+  const data = await res.json() as { credentials: CredentialInfo[] };
+  return data.credentials;
+}
+
+export async function getWrappedKey(): Promise<{ wrappedKey: string; iv: string } | null> {
+  const res = await fetch('/api/auth/wrapped-key', { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to get wrapped key');
+  const data = await res.json() as { wrappedKey: string | null; iv?: string };
+  if (!data.wrappedKey) return null;
+  return { wrappedKey: data.wrappedKey, iv: data.iv as string };
+}
+
+export async function startAddCredential(): Promise<{ options: PublicKeyCredentialCreationOptionsJSON; challengeId: string }> {
+  const res = await fetch('/api/auth/add-credential/start', { credentials: 'include' });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to start adding credential');
+  return res.json() as Promise<{ options: PublicKeyCredentialCreationOptionsJSON; challengeId: string }>;
+}
+
+export async function storeWrappedKey(credentialId: string, wrappedKey: string, iv: string): Promise<void> {
+  const res = await fetch('/api/auth/wrapped-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'include',
+    body: JSON.stringify({ credentialId, wrappedKey, iv }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to store wrapped key');
+}
+
+export async function finishAddCredential(
+  credential: RegistrationResponseJSON,
+  challengeId: string,
+): Promise<{ verified: boolean }> {
+  const res = await fetch('/api/auth/add-credential/finish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'include',
+    body: JSON.stringify({ response: credential, challengeId }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to add credential');
+  return res.json() as Promise<{ verified: boolean }>;
+}
+
+export async function updateCredentialName(credentialId: string, nameEncrypted: string | null): Promise<void> {
+  const res = await fetch(`/api/auth/credentials/${encodeURIComponent(credentialId)}/name`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(await csrfHeaders()) },
+    credentials: 'include',
+    body: JSON.stringify({ nameEncrypted }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to update credential name');
+}
+
+export async function revokeCredential(credentialId: string): Promise<void> {
+  const res = await fetch(`/api/auth/credentials/${encodeURIComponent(credentialId)}`, {
+    method: 'DELETE',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to revoke credential');
+}
+
+// Admin credential management API
+
+export interface AdminCredential {
+  credentialId: string;
+  transports: string[];
+  createdAt: string;
+}
+
+export async function listAdminUserCredentials(userId: string): Promise<AdminCredential[]> {
+  const res = await fetch(`/api/admin/users/${userId}/credentials`, { credentials: 'include' });
+  if (!res.ok) throw new Error('Failed to list credentials');
+  return res.json() as Promise<AdminCredential[]>;
+}
+
+export async function revokeAdminUserCredential(userId: string, credentialId: string): Promise<void> {
+  const res = await fetch(`/api/admin/users/${userId}/credentials/${encodeURIComponent(credentialId)}`, {
+    method: 'DELETE',
+    headers: await csrfHeaders(),
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error || 'Failed to revoke credential');
 }

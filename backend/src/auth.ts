@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -84,12 +84,11 @@ router.get('/register/start/:username', async (req: Request, res: Response) => {
 // POST /auth/register/finish
 router.post('/register/finish', async (req: Request, res: Response) => {
   try {
-    const { response, credential, challengeId, username, displayName } = req.body as {
+    const { response, credential, challengeId, username } = req.body as {
       response: unknown;
       credential?: unknown;
       challengeId: string;
       username: string;
-      displayName?: string;
     };
 
     const webauthnResponse = response ?? credential;
@@ -130,8 +129,8 @@ router.post('/register/finish', async (req: Request, res: Response) => {
     if (!userId) {
       userId = uuidv4();
       db.prepare(
-        'INSERT INTO users (id, username, display_name, created_at) VALUES (?, ?, ?, ?)',
-      ).run(userId, username, displayName ?? username, new Date().toISOString());
+        'INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)',
+      ).run(userId, username, new Date().toISOString());
     }
 
     // Get transports from the response if available
@@ -172,9 +171,9 @@ router.post('/login/start', async (req: Request, res: Response) => {
 
     const db = getDb();
 
-    type UserRow = { id: string; username: string; display_name: string };
+    type UserRow = { id: string; username: string };
     const user = db
-      .prepare('SELECT id, username, display_name FROM users WHERE username = ?')
+      .prepare('SELECT id, username FROM users WHERE username = ?')
       .get(username) as UserRow | undefined;
 
     if (!user) {
@@ -323,6 +322,283 @@ router.post('/logout', (req: Request, res: Response) => {
     }
     res.json({ success: true });
   });
+});
+
+// ─── Authenticated-user-only middleware ──────────────────────────────────────
+
+function requireUserAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!req.session.userId) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  next();
+}
+
+// GET /auth/credentials — list credentials registered to the current user
+router.get('/credentials', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    type CredRow = { credential_id: string; transports: string; created_at: string; name_encrypted: string | null };
+    const rows = db
+      .prepare('SELECT credential_id, transports, created_at, name_encrypted FROM credentials WHERE user_id = ? ORDER BY created_at ASC')
+      .all(req.session.userId) as CredRow[];
+
+    const credentials = rows.map((r) => ({
+      credentialId: r.credential_id,
+      transports: JSON.parse(r.transports) as AuthenticatorTransportFuture[],
+      createdAt: r.created_at,
+      nameEncrypted: r.name_encrypted ?? null,
+    }));
+
+    res.json({ credentials });
+  } catch (err) {
+    console.error('credentials list error:', err);
+    res.status(500).json({ error: 'Failed to list credentials' });
+  }
+});
+
+// DELETE /auth/credentials/:credentialId — revoke one of the user's own authenticators.
+// The credential being revoked must not be the one used for the current session.
+// The user must have at least one other credential remaining after revocation.
+router.delete('/credentials/:credentialId', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const { credentialId } = req.params;
+    const db = getDb();
+
+    // Reject self-revocation (cannot revoke the credential used for the current session)
+    if (credentialId === req.session.credentialId) {
+      res.status(400).json({ error: 'Cannot revoke the authenticator used for the current session' });
+      return;
+    }
+
+    // Verify the credential belongs to the authenticated user
+    const credRow = db
+      .prepare('SELECT id FROM credentials WHERE credential_id = ? AND user_id = ?')
+      .get(credentialId, req.session.userId) as { id: string } | undefined;
+
+    if (!credRow) {
+      res.status(404).json({ error: 'Credential not found' });
+      return;
+    }
+
+    // Ensure the user has more than one credential (cannot delete the last one)
+    const count = (
+      db.prepare('SELECT COUNT(*) AS cnt FROM credentials WHERE user_id = ?').get(req.session.userId) as { cnt: number }
+    ).cnt;
+
+    if (count <= 1) {
+      res.status(400).json({ error: 'Cannot revoke the last authenticator. Delete your account instead.' });
+      return;
+    }
+
+    // Remove the credential and its wrapped key entry atomically
+    db.transaction(() => {
+      db.prepare('DELETE FROM user_wrapped_keys WHERE user_id = ? AND credential_id = ?').run(req.session.userId, credentialId);
+      db.prepare('DELETE FROM credentials WHERE credential_id = ? AND user_id = ?').run(credentialId, req.session.userId);
+    })();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('credentials revoke error:', err);
+    res.status(500).json({ error: 'Failed to revoke credential' });
+  }
+});
+
+// PATCH /auth/credentials/:credentialId/name — update the encrypted display name for an authenticator
+router.patch('/credentials/:credentialId/name', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const { credentialId } = req.params;
+    const { nameEncrypted } = req.body as { nameEncrypted?: string | null };
+
+    const db = getDb();
+
+    // Verify the credential belongs to the authenticated user
+    const credRow = db
+      .prepare('SELECT id FROM credentials WHERE credential_id = ? AND user_id = ?')
+      .get(credentialId, req.session.userId) as { id: string } | undefined;
+
+    if (!credRow) {
+      res.status(404).json({ error: 'Credential not found' });
+      return;
+    }
+
+    db.prepare('UPDATE credentials SET name_encrypted = ? WHERE credential_id = ? AND user_id = ?').run(
+      nameEncrypted ?? null,
+      credentialId,
+      req.session.userId,
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('credentials name update error:', err);
+    res.status(500).json({ error: 'Failed to update credential name' });
+  }
+});
+
+// GET /auth/add-credential/start — begin registering an additional authenticator
+// Requires an active authenticated session.
+router.get('/add-credential/start', requireUserAuth, async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+
+    type CredRow = { credential_id: string; transports: string };
+    const existing = db
+      .prepare('SELECT credential_id, transports FROM credentials WHERE user_id = ?')
+      .all(req.session.userId) as CredRow[];
+
+    const excludeCredentials = existing.map((c) => ({
+      id: c.credential_id,
+      transports: JSON.parse(c.transports) as AuthenticatorTransportFuture[],
+    }));
+
+    const options = await generateRegistrationOptions({
+      rpName: RP_NAME,
+      rpID: RP_ID,
+      userName: req.session.username as string,
+      userDisplayName: req.session.username as string,
+      attestationType: 'none',
+      excludeCredentials,
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+      },
+    });
+
+    const challengeId = uuidv4();
+    db.prepare('INSERT INTO challenges (id, challenge, user_id, created_at) VALUES (?, ?, ?, ?)').run(
+      challengeId,
+      options.challenge,
+      req.session.userId,
+      new Date().toISOString(),
+    );
+
+    res.json({ options, challengeId });
+  } catch (err) {
+    console.error('add-credential/start error:', err);
+    res.status(500).json({ error: 'Failed to start credential registration' });
+  }
+});
+
+// POST /auth/add-credential/finish — complete registering an additional authenticator
+router.post('/add-credential/finish', requireUserAuth, async (req: Request, res: Response) => {
+  try {
+    const { response, challengeId } = req.body as { response: unknown; challengeId: string };
+
+    if (!response || !challengeId) {
+      res.status(400).json({ error: 'Missing required fields' });
+      return;
+    }
+
+    const db = getDb();
+
+    type ChallengeRow = { id: string; challenge: string; user_id: string | null };
+    const challengeRow = db
+      .prepare('SELECT id, challenge, user_id FROM challenges WHERE id = ?')
+      .get(challengeId) as ChallengeRow | undefined;
+
+    if (!challengeRow || challengeRow.user_id !== req.session.userId) {
+      res.status(400).json({ error: 'Invalid or expired challenge' });
+      return;
+    }
+
+    const verification = await verifyRegistrationResponse({
+      response: response as Parameters<typeof verifyRegistrationResponse>[0]['response'],
+      expectedChallenge: challengeRow.challenge,
+      expectedOrigin: RP_ORIGIN,
+      expectedRPID: RP_ID,
+    });
+
+    if (!verification.verified || !verification.registrationInfo) {
+      res.status(400).json({ error: 'Credential verification failed' });
+      return;
+    }
+
+    const { credentialID, credentialPublicKey, counter } = verification.registrationInfo;
+
+    const authResponse = response as { response?: { transports?: AuthenticatorTransportFuture[] } };
+    const transports: AuthenticatorTransportFuture[] = authResponse.response?.transports ?? [];
+
+    db.prepare(
+      'INSERT INTO credentials (id, user_id, credential_id, public_key, counter, transports, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      uuidv4(),
+      req.session.userId,
+      credentialID,
+      Buffer.from(credentialPublicKey).toString('hex'),
+      counter,
+      JSON.stringify(transports),
+      new Date().toISOString(),
+    );
+
+    db.prepare('DELETE FROM challenges WHERE id = ?').run(challengeId);
+
+    res.json({ verified: true });
+  } catch (err) {
+    console.error('add-credential/finish error:', err);
+    res.status(500).json({ error: 'Failed to finish credential registration' });
+  }
+});
+
+// GET /auth/wrapped-key — retrieve the wrapped master key for the current session's credential
+// Returns { wrappedKey, iv } or { wrappedKey: null } if not yet set up.
+router.get('/wrapped-key', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    type Row = { wrapped_key: string; iv: string };
+    const row = db
+      .prepare('SELECT wrapped_key, iv FROM user_wrapped_keys WHERE user_id = ? AND credential_id = ?')
+      .get(req.session.userId, req.session.credentialId) as Row | undefined;
+
+    if (!row) {
+      res.json({ wrappedKey: null });
+      return;
+    }
+    res.json({ wrappedKey: row.wrapped_key, iv: row.iv });
+  } catch (err) {
+    console.error('wrapped-key get error:', err);
+    res.status(500).json({ error: 'Failed to retrieve wrapped key' });
+  }
+});
+
+// POST /auth/wrapped-key — store (or update) the wrapped master key for a credential
+// Body: { credentialId, wrappedKey, iv }
+// The credential must belong to the current authenticated user.
+router.post('/wrapped-key', requireUserAuth, (req: Request, res: Response) => {
+  try {
+    const { credentialId, wrappedKey, iv } = req.body as {
+      credentialId?: string;
+      wrappedKey?: string;
+      iv?: string;
+    };
+
+    if (!credentialId || !wrappedKey || !iv) {
+      res.status(400).json({ error: 'Missing required fields: credentialId, wrappedKey, iv' });
+      return;
+    }
+
+    const db = getDb();
+
+    // Verify the target credential belongs to the authenticated user
+    const credRow = db
+      .prepare('SELECT id FROM credentials WHERE credential_id = ? AND user_id = ?')
+      .get(credentialId, req.session.userId) as { id: string } | undefined;
+
+    if (!credRow) {
+      res.status(403).json({ error: 'Credential does not belong to this user' });
+      return;
+    }
+
+    db.prepare(`
+      INSERT INTO user_wrapped_keys (id, user_id, credential_id, wrapped_key, iv, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, credential_id) DO UPDATE SET wrapped_key = excluded.wrapped_key, iv = excluded.iv
+    `).run(uuidv4(), req.session.userId, credentialId, wrappedKey, iv, new Date().toISOString());
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('wrapped-key post error:', err);
+    res.status(500).json({ error: 'Failed to store wrapped key' });
+  }
 });
 
 export default router;

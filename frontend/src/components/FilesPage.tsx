@@ -52,9 +52,14 @@ import {
   LockClosedRegular,
   PersonRegular,
   MoreHorizontalRegular,
+  AddRegular,
+  PhoneRegular,
+  WarningRegular,
+  KeyRegular,
 } from '@fluentui/react-icons';
-import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout } from '../api';
-import type { FileRecord } from '../api';
+import { listFiles, uploadFile, downloadFile, previewFile, deleteFile, logout, listCredentials, startAddCredential, finishAddCredential, getWrappedKey, storeWrappedKey, startLogin, updateCredentialName, revokeCredential } from '../api';
+import type { FileRecord, CredentialInfo } from '../api';
+import { browserRegister, browserAuthenticate, deriveWrappingKey, wrapMasterKey, unwrapMasterKey, clientEncryptFile, clientDecryptFile, arrayBufferToBase64url, base64urlToArrayBuffer } from '../webauthn';
 import { formatFileSize, formatDate } from '../utils';
 import UploadArea from './UploadArea';
 
@@ -304,6 +309,33 @@ function isViewable(mimeType: string): boolean {
   return mimeType.startsWith('image/') || mimeType === 'application/pdf';
 }
 
+/** Returns a human-readable label for an authMechanisms value. */
+function authMechanismsLabel(authMechanisms: string): string {
+  switch (authMechanisms) {
+    case 'e2e-platform': return 'E2E (platform authenticator, e.g. TouchID/Face ID)';
+    case 'e2e-roaming': return 'E2E (security key)';
+    case 'e2e-hybrid': return 'E2E (passkey/hybrid authenticator)';
+    case 'e2e-unknown': return 'E2E (authenticator type unknown)';
+    case 'server': return 'Server-side encrypted only';
+    default: return 'Server-side encrypted only';
+  }
+}
+
+/** Returns the icon used to indicate the type of authenticator that performed E2E encryption. */
+function authMechanismsIcon(authMechanisms: string): React.ReactElement | undefined {
+  if (authMechanisms === 'e2e-platform') return <PhoneRegular />;
+  if (authMechanisms === 'e2e-hybrid') return <PhoneRegular />;
+  if (authMechanisms.startsWith('e2e')) return <KeyRegular />;
+  return undefined;
+}
+
+/** Returns a short display label for a credential based on its transports. */
+function credentialTransportLabel(transports: string[]): string {
+  if (transports.includes('internal')) return 'Platform authenticator (TouchID / Face ID)';
+  if (transports.includes('hybrid')) return 'Passkey (hybrid)';
+  return 'Security key';
+}
+
 export default function FilesPage({ username, credentialId, clientKey, onLogout }: FilesPageProps) {
   const styles = useStyles();
   const [files, setFiles] = useState<FileRecord[]>([]);
@@ -320,6 +352,21 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const previewUrlRef = useRef<string | null>(null);
+
+  // Add-credential state
+  const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
+  const [decryptedCredentialNames, setDecryptedCredentialNames] = useState<Record<string, string>>({});
+  const [addCredentialOpen, setAddCredentialOpen] = useState(false);
+  const [addCredentialName, setAddCredentialName] = useState('');
+  const [addCredentialStatus, setAddCredentialStatus] = useState('');
+  const [addCredentialError, setAddCredentialError] = useState('');
+  const [addCredentialSuccess, setAddCredentialSuccess] = useState(false);
+  const [addCredentialLoading, setAddCredentialLoading] = useState(false);
+
+  // Revoke-credential state
+  const [revokeTargetCredId, setRevokeTargetCredId] = useState<string | null>(null);
+  const [revokeLoading, setRevokeLoading] = useState(false);
+  const [revokeError, setRevokeError] = useState('');
 
   const loadFiles = useCallback(async (folder: string) => {
     setFilesLoading(true);
@@ -339,6 +386,30 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
     void loadFiles(currentFolder);
   }, [loadFiles, currentFolder]);
 
+  // Load credentials list on mount for display in profile popover; decrypt names if clientKey available
+  useEffect(() => {
+    void listCredentials().then(async (creds) => {
+      setCredentials(creds);
+      if (!clientKey) return;
+      const names: Record<string, string> = {};
+      await Promise.all(
+        creds.map(async (cred) => {
+          if (!cred.nameEncrypted) return;
+          try {
+            const encBytes = base64urlToArrayBuffer(cred.nameEncrypted);
+            const decBytes = await clientDecryptFile(encBytes, clientKey);
+            names[cred.credentialId] = new TextDecoder().decode(decBytes);
+          } catch {
+            // Decryption failed (e.g. encrypted with a different key) — skip
+          }
+        }),
+      );
+      setDecryptedCredentialNames(names);
+    }).catch((err: unknown) => {
+      console.warn('Failed to load credentials list:', err instanceof Error ? err.message : err);
+    });
+  }, [clientKey]);
+
   // Clean up any outstanding preview object URL when the component unmounts
   useEffect(() => {
     return () => {
@@ -351,6 +422,109 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
   async function handleLogout() {
     await logout();
     onLogout();
+  }
+
+  async function handleRevokeCredential() {
+    if (!revokeTargetCredId) return;
+    setRevokeLoading(true);
+    setRevokeError('');
+    try {
+      await revokeCredential(revokeTargetCredId);
+      setCredentials((prev) => prev.filter((c) => c.credentialId !== revokeTargetCredId));
+      setRevokeTargetCredId(null);
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : 'Failed to revoke authenticator');
+    } finally {
+      setRevokeLoading(false);
+    }
+  }
+
+  async function handleAddCredential() {
+    setAddCredentialError('');
+    setAddCredentialStatus('');
+    setAddCredentialSuccess(false);
+    setAddCredentialLoading(true);
+    try {
+      // Step 1: Register the new credential
+      setAddCredentialStatus('Starting registration...');
+      const { options, challengeId } = await startAddCredential();
+      setAddCredentialStatus('Touch your authenticator (TouchID, Face ID, or security key)...');
+      const newCredential = await browserRegister(options);
+      setAddCredentialStatus('Completing registration...');
+      await finishAddCredential(newCredential, challengeId);
+
+      const newCredentialId = newCredential.id;
+
+      // Step 2: If the current session has a master key, wrap it for the new credential.
+      // This enables the new credential to decrypt any file encrypted with the master key,
+      // regardless of which credential originally uploaded it.
+      if (clientKey) {
+        try {
+          setAddCredentialStatus('Activating shared encryption for the new authenticator — touch your new authenticator again to confirm.');
+          // Get a WebAuthn challenge so we can call navigator.credentials.get() on the new
+          // credential and extract its PRF output. We reuse login/start (with the current user's
+          // username) to obtain a server-generated challenge; we intentionally do NOT call
+          // login/finish afterwards — the session remains unchanged and the orphaned challenge
+          // entry in the DB is harmless (it contains no sensitive data and is never consumed).
+          const { options: loginOptions } = await startLogin(username);
+          const { prfOutput: newPrfOutput } = await browserAuthenticate({
+            ...loginOptions,
+            // Restrict to just the newly registered credential
+            allowCredentials: [{ id: newCredentialId, type: 'public-key' }],
+          });
+
+          if (newPrfOutput) {
+            // Derive a wrapping key from the new credential's PRF and wrap the shared master key
+            const newWrappingKey = await deriveWrappingKey(newPrfOutput);
+            const { wrappedKey, iv } = await wrapMasterKey(clientKey, newWrappingKey);
+            await storeWrappedKey(newCredentialId, wrappedKey, iv);
+          }
+          // If newPrfOutput is null the new credential doesn't support PRF — the credential
+          // is still registered, but cross-credential decryption won't be available for it.
+        } catch {
+          // Key wrapping failed (e.g. user cancelled the second touch) — the credential is
+          // still registered; cross-credential decryption can be set up by signing in with
+          // the new credential and then re-adding it.
+        }
+
+        // Step 3: Encrypt and store the authenticator name if provided
+        const trimmedName = addCredentialName.trim();
+        if (trimmedName) {
+          try {
+            const encBytes = await clientEncryptFile(new TextEncoder().encode(trimmedName).buffer as ArrayBuffer, clientKey);
+            await updateCredentialName(newCredentialId, arrayBufferToBase64url(encBytes));
+          } catch {
+            // Name storage failure is non-fatal
+          }
+        }
+      }
+
+      setAddCredentialSuccess(true);
+      setAddCredentialStatus('');
+      setAddCredentialName('');
+      // Refresh credentials list and decrypt names
+      const updated = await listCredentials();
+      setCredentials(updated);
+      if (clientKey) {
+        const names: Record<string, string> = { ...decryptedCredentialNames };
+        await Promise.all(
+          updated.map(async (cred) => {
+            if (!cred.nameEncrypted) return;
+            try {
+              const encBytes = base64urlToArrayBuffer(cred.nameEncrypted);
+              const decBytes = await clientDecryptFile(encBytes, clientKey);
+              names[cred.credentialId] = new TextDecoder().decode(decBytes);
+            } catch { /* skip */ }
+          }),
+        );
+        setDecryptedCredentialNames(names);
+      }
+    } catch (err) {
+      setAddCredentialError(err instanceof Error ? err.message : 'Failed to add authenticator');
+      setAddCredentialStatus('');
+    } finally {
+      setAddCredentialLoading(false);
+    }
   }
 
   function handleFilesSelected(selected: File[]) {
@@ -501,6 +675,55 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                     Session encryption only
                   </Badge>
                 )}
+                {credentials.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <Text size={200} style={{ color: 'var(--colorNeutralForeground3)', fontWeight: 600 }}>
+                      Registered authenticators
+                    </Text>
+                    {credentials.map((cred) => {
+                      const isCurrentSession = cred.credentialId === credentialId;
+                      const isPlatform = cred.transports.includes('internal');
+                      const isHybrid = cred.transports.includes('hybrid');
+                      const label = credentialTransportLabel(cred.transports);
+                      const displayName = decryptedCredentialNames[cred.credentialId];
+                      return (
+                        <div key={cred.credentialId} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          {isPlatform || isHybrid ? <PhoneRegular fontSize={14} /> : <KeyRegular fontSize={14} />}
+                          <Text size={200} style={{ flex: 1 }}>{displayName ?? label}</Text>
+                          {isCurrentSession ? (
+                            <Badge appearance="tint" color="brand" size="small">current</Badge>
+                          ) : (
+                            <Button
+                              appearance="subtle"
+                              size="small"
+                              style={{ color: 'var(--colorPaletteRedForeground2)', padding: '0 4px', minWidth: 0 }}
+                              onClick={() => {
+                                setRevokeTargetCredId(cred.credentialId);
+                                setRevokeError('');
+                              }}
+                            >
+                              Revoke
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <Button
+                  appearance="subtle"
+                  icon={<AddRegular />}
+                  size="small"
+                  onClick={() => {
+                    setAddCredentialOpen(true);
+                    setAddCredentialError('');
+                    setAddCredentialStatus('');
+                    setAddCredentialSuccess(false);
+                    setAddCredentialName('');
+                  }}
+                >
+                  Add authenticator
+                </Button>
                 <Divider />
                 <Button
                   appearance="subtle"
@@ -716,22 +939,41 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                     </td>
                     <td className={mergeClasses(styles.td, styles.mobileHidden)}>{formatDate(file.uploadedAt)}</td>
                     <td className={mergeClasses(styles.td, styles.mobileHidden)}>
-                      <Tooltip
-                        content={
-                          file.clientEncrypted
-                            ? 'End-to-end encrypted (YubiKey + server)'
-                            : 'Server-side encrypted only'
-                        }
-                        relationship="label"
-                      >
-                        <Badge
-                          appearance="tint"
-                          color={file.clientEncrypted ? 'success' : 'subtle'}
-                          icon={file.clientEncrypted ? <LockClosedRegular /> : undefined}
-                        >
-                          {file.clientEncrypted ? 'E2E' : 'Server'}
-                        </Badge>
-                      </Tooltip>
+                      {file.clientEncrypted ? (
+                        file.credentialId === credentialId ? (
+                          <Tooltip
+                            content={`${authMechanismsLabel(file.authMechanisms)} — this session can decrypt`}
+                            relationship="label"
+                          >
+                            <Badge
+                              appearance="tint"
+                              color="success"
+                              icon={authMechanismsIcon(file.authMechanisms) ?? <LockClosedRegular />}
+                            >
+                              E2E ✓
+                            </Badge>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip
+                            content={`${authMechanismsLabel(file.authMechanisms)} — log in with the original authenticator to decrypt client-side`}
+                            relationship="label"
+                          >
+                            <Badge
+                              appearance="tint"
+                              color="warning"
+                              icon={<WarningRegular />}
+                            >
+                              E2E
+                            </Badge>
+                          </Tooltip>
+                        )
+                      ) : (
+                        <Tooltip content="Server-side encrypted only" relationship="label">
+                          <Badge appearance="tint" color="subtle">
+                            Server
+                          </Badge>
+                        </Tooltip>
+                      )}
                     </td>
                     <td className={styles.tdActions}>
                       {/* Desktop: inline icon buttons */}
@@ -944,6 +1186,144 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
               </Button>
               <Button appearance="primary" onClick={handleClosePreview}>
                 Close
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+
+      {/* Register Authenticator Dialog */}
+      <Dialog
+        open={addCredentialOpen}
+        onOpenChange={(_, data) => {
+          if (!data.open) {
+            setAddCredentialOpen(false);
+            setAddCredentialError('');
+            setAddCredentialStatus('');
+            setAddCredentialSuccess(false);
+            setAddCredentialName('');
+          }
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Register authenticator</DialogTitle>
+            <DialogContent>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <Text>
+                  Register an additional authenticator (e.g. security key, TouchID, Face ID, Windows Hello, or a passkey)
+                  to share the same encryption key. You will be prompted twice: once to register the
+                  authenticator and once to activate shared encryption. After this, signing in with either
+                  authenticator will give access to all your E2E encrypted files.
+                </Text>
+                {clientKey && !addCredentialLoading && !addCredentialSuccess && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <Label htmlFor="add-cred-name">Authenticator name (optional)</Label>
+                    <Input
+                      id="add-cred-name"
+                      placeholder="e.g. Work security key, Home laptop"
+                      value={addCredentialName}
+                      onChange={(_, d) => setAddCredentialName(d.value)}
+                      disabled={addCredentialLoading}
+                    />
+                    <Text size={100} style={{ color: 'var(--colorNeutralForeground3)' }}>
+                      The name is encrypted and only visible to you.
+                    </Text>
+                  </div>
+                )}
+                {addCredentialSuccess && (
+                  <MessageBar intent="success">
+                    <MessageBarBody>
+                      Authenticator added successfully! You can now sign in with it to enable E2E encryption.
+                    </MessageBarBody>
+                  </MessageBar>
+                )}
+                {addCredentialError && (
+                  <MessageBar intent="error">
+                    <MessageBarBody>{addCredentialError}</MessageBarBody>
+                  </MessageBar>
+                )}
+                {addCredentialStatus && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {addCredentialLoading && <Spinner size="tiny" />}
+                    <Text size={200}>{addCredentialStatus}</Text>
+                  </div>
+                )}
+              </div>
+            </DialogContent>
+            <DialogActions>
+              <DialogTrigger disableButtonEnhancement>
+                <Button appearance="secondary" disabled={addCredentialLoading}>
+                  {addCredentialSuccess ? 'Close' : 'Cancel'}
+                </Button>
+              </DialogTrigger>
+              {!addCredentialSuccess && (
+                <Button
+                  appearance="primary"
+                  icon={addCredentialLoading ? <Spinner size="tiny" /> : <AddRegular />}
+                  onClick={() => void handleAddCredential()}
+                  disabled={addCredentialLoading}
+                >
+                  {addCredentialLoading ? 'Registering...' : 'Register'}
+                </Button>
+              )}
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+
+      {/* Revoke Authenticator Confirmation Dialog */}
+      <Dialog
+        open={revokeTargetCredId !== null}
+        onOpenChange={(_, data) => {
+          if (!data.open) {
+            setRevokeTargetCredId(null);
+            setRevokeError('');
+          }
+        }}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Revoke authenticator?</DialogTitle>
+            <DialogContent>
+              {(() => {
+                const cred = credentials.find((c) => c.credentialId === revokeTargetCredId);
+                if (!cred) return null;
+                const label = decryptedCredentialNames[cred.credentialId] ?? credentialTransportLabel(cred.transports);
+                return (
+                  <>
+                    <Text>
+                      Remove <strong>{label}</strong> (registered {formatDate(cred.createdAt)}) from your account?
+                      You will no longer be able to sign in with it.
+                    </Text>
+                    {revokeError && (
+                      <MessageBar intent="error" style={{ marginTop: '12px' }}>
+                        <MessageBarBody>{revokeError}</MessageBarBody>
+                      </MessageBar>
+                    )}
+                  </>
+                );
+              })()}
+            </DialogContent>
+            <DialogActions>
+              <Button
+                appearance="secondary"
+                disabled={revokeLoading}
+                onClick={() => {
+                  setRevokeTargetCredId(null);
+                  setRevokeError('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                appearance="primary"
+                style={{ backgroundColor: 'var(--colorPaletteRedBackground3)' }}
+                disabled={revokeLoading}
+                icon={revokeLoading ? <Spinner size="tiny" /> : undefined}
+                onClick={() => void handleRevokeCredential()}
+              >
+                {revokeLoading ? 'Revoking...' : 'Revoke'}
               </Button>
             </DialogActions>
           </DialogBody>

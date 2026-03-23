@@ -79,14 +79,13 @@ router.get('/users', requireAdmin, (req: Request, res: Response) => {
     type UserRow = {
       id: string;
       username: string;
-      display_name: string;
       created_at: string;
       last_login_at: string | null;
       last_login_e2e: number;
     };
     const users = db
       .prepare(
-        'SELECT id, username, display_name, created_at, last_login_at, last_login_e2e FROM users ORDER BY created_at DESC',
+        'SELECT id, username, created_at, last_login_at, last_login_e2e FROM users ORDER BY created_at DESC',
       )
       .all() as UserRow[];
 
@@ -94,7 +93,6 @@ router.get('/users', requireAdmin, (req: Request, res: Response) => {
       users.map((u) => ({
         id: u.id,
         username: u.username,
-        displayName: u.display_name,
         createdAt: u.created_at,
         lastLoginAt: u.last_login_at ?? null,
         lastLoginE2e: u.last_login_e2e === 1,
@@ -128,6 +126,78 @@ router.delete('/users/:id', requireAdmin, (req: Request, res: Response) => {
   } catch (err) {
     console.error('admin delete user error:', err);
     res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+// GET /admin/users/:userId/credentials — list a user's registered authenticators
+router.get('/users/:userId/credentials', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const { userId } = req.params;
+
+    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId) as { id: string } | undefined;
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    type CredRow = { credential_id: string; transports: string; created_at: string };
+    const rows = db
+      .prepare('SELECT credential_id, transports, created_at FROM credentials WHERE user_id = ? ORDER BY created_at ASC')
+      .all(userId) as CredRow[];
+
+    res.json(
+      rows.map((r) => ({
+        credentialId: r.credential_id,
+        transports: JSON.parse(r.transports) as string[],
+        createdAt: r.created_at,
+      })),
+    );
+  } catch (err) {
+    console.error('admin list credentials error:', err);
+    res.status(500).json({ error: 'Failed to list credentials' });
+  }
+});
+
+// DELETE /admin/users/:userId/credentials/:credentialId — revoke a single authenticator
+// The user must have at least one other authenticator; the last authenticator cannot be revoked.
+router.delete('/users/:userId/credentials/:credentialId', requireAdmin, (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const { userId, credentialId } = req.params;
+
+    const user = db.prepare('SELECT id FROM users WHERE id = ?').get(userId) as { id: string } | undefined;
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    const count = (
+      db.prepare('SELECT COUNT(*) AS cnt FROM credentials WHERE user_id = ?').get(userId) as { cnt: number }
+    ).cnt;
+
+    if (count <= 1) {
+      res.status(400).json({ error: 'Cannot revoke the last authenticator. Delete the user instead.' });
+      return;
+    }
+
+    const cred = db
+      .prepare('SELECT id FROM credentials WHERE credential_id = ? AND user_id = ?')
+      .get(credentialId, userId) as { id: string } | undefined;
+
+    if (!cred) {
+      res.status(404).json({ error: 'Credential not found' });
+      return;
+    }
+
+    // Remove the credential and its wrapped key entry
+    db.prepare('DELETE FROM user_wrapped_keys WHERE user_id = ? AND credential_id = ?').run(userId, credentialId);
+    db.prepare('DELETE FROM credentials WHERE credential_id = ? AND user_id = ?').run(credentialId, userId);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('admin revoke credential error:', err);
+    res.status(500).json({ error: 'Failed to revoke credential' });
   }
 });
 
