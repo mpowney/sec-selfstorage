@@ -196,7 +196,7 @@ const useStyles = makeStyles({
     '@media (max-width: 640px)': {
       overflowX: 'clip',
       textOverflow: 'ellipsis',
-      maxWidth: 'calc(100vw - 130px)',
+      maxWidth: 'calc(100vw - 220px)',
     },
   },
   mobileHidden: {
