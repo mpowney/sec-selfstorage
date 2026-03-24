@@ -192,6 +192,13 @@ const useStyles = makeStyles({
       minWidth: '0',
     },
   },
+  filenameText: {
+    '@media (max-width: 640px)': {
+      overflowX: 'clip',
+      textOverflow: 'ellipsis',
+      maxWidth: 'calc(100vw - 130px)',
+    },
+  },
   mobileHidden: {
     '@media (max-width: 640px)': {
       display: 'none',
@@ -926,7 +933,7 @@ export default function FilesPage({ username, credentialId, clientKey, onLogout 
                         >
                           {getFileTypeIcon(file.mimeType)}
                         </span>
-                        <Text truncate title={file.filename}>
+                        <Text truncate title={file.filename} className={styles.filenameText}>
                           {file.filename}
                         </Text>
                       </div>
